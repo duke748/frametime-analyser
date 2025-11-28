@@ -87,9 +87,10 @@ class FileVideoStream:
                 if self.transform:
                     frame = self.transform(frame)
 
-                frame = ResizeWithAspectRatio(frame, width=1280) #slow function, about 2.5ms
-                # add the frame to the queue
-                self.Q.put(frame)
+                if frame is not None:
+                    frame = ResizeWithAspectRatio(frame, width=1280) #slow function, about 2.5ms
+                    # add the frame to the queue
+                    self.Q.put(frame)
             else:
                 time.sleep(0.1)  # Rest for 10ms, we have a full queue
 
