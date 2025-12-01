@@ -118,7 +118,7 @@ python -m venv .venv
 # source .venv/bin/activate  # Linux/Mac
 
 # Install dependencies
-pip install numpy opencv-python
+pip install numpy opencv-python matplotlib
 ```
 
 ---
@@ -266,6 +266,60 @@ Bad,50+,27,1.33%
 - **Recommended**: i7-3770 or better for H.264 @ 1080p
 - **Higher resolutions/H.265**: Requires faster CPU
 - **Memory usage**: ~1.7MB for 30-minute histogram buffer (negligible)
+
+---
+
+## Testing
+
+The project includes a comprehensive test suite covering unit and integration tests.
+
+### Running Tests
+
+**Using unittest (built-in):**
+```bash
+# Run all tests
+python -m unittest discover tests
+
+# Run specific test file
+python -m unittest tests.test_libraries
+
+# Run with verbose output
+python -m unittest discover tests -v
+```
+
+**Using pytest (recommended):**
+```bash
+# Install test dependencies
+pip install pytest pytest-cov
+
+# Run all tests
+pytest tests/ -v
+
+# Run with coverage report
+pytest tests/ --cov=. --cov-report=html
+
+# Run specific test file
+pytest tests/test_libraries.py -v
+```
+
+### Test Coverage
+
+The test suite includes:
+
+- **Unit Tests** (`test_libraries.py`)
+  - `ResizeWithAspectRatio` function testing
+  - `FileVideoStream` class initialization and configuration
+  - Frametime calculation accuracy
+  - Histogram bucket calculations
+  - Image processing operations
+
+- **Integration Tests** (`test_integration.py`)
+  - Video file generation and validation
+  - Command-line argument parsing
+  - Output file naming conventions
+  - Performance metric calculations
+  - Stutter detection logic
+  - Data structure initialization
 
 ---
 
