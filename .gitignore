@@ -25,6 +25,7 @@ Thumbs.db
 # Project specific
 *_analyzed.mp4
 *_histogram.csv
+*_frametimes.csv
 
 # Test files
 tests/*.mp4
@@ -34,3 +35,8 @@ tests/*.avi
 htmlcov/
 .coverage
 .coverage.*
+
+# Packaging
+build/
+dist/
+*.egg-info/

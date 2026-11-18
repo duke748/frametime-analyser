@@ -1,141 +1,58 @@
 # Testing Guide
 
-The Frametime Analyser project includes a comprehensive test suite covering unit and integration tests.
+The test suite covers every module, plus end-to-end runs on generated videos with known frame timing: dropped frames, a pause, a facecam overlay, two captures to compare, and a V-Sync-off capture with tearing.
 
 ## Running Tests
 
-Run all test commands from the repository root (the folder containing `libraries.py`).
-
-### Install dependencies
+Run commands from the repository root.
 
 ```bash
-pip install -r requirements.txt
-```
+# Install the runtime and test dependencies (pytest, pytest-cov, ruff)
+pip install -r requirements-dev.txt
 
-### Using unittest (built-in)
+# Lint
+ruff check .
 
-```bash
 # Run all tests
-python -m unittest discover tests
+pytest -v
 
-# Run specific test file
-python -m unittest tests.test_libraries
+# With coverage
+pytest --cov --cov-report=term-missing   # or --cov-report=html (written to htmlcov/)
 
-# Run with verbose output
-python -m unittest discover tests -v
+# One file
+pytest tests/test_analyser.py -v
 ```
 
-### Using pytest (recommended)
+The built-in runner works too: `python -m unittest discover tests -v`.
 
-```bash
-# Run all tests
-pytest tests/ -v
-
-# Run with coverage report (written to htmlcov/)
-pytest tests/ --cov=libraries --cov-report=html
-
-# Run specific test file
-pytest tests/test_libraries.py -v
-```
-
-## Test Coverage
-
-The test suite includes:
-
-### Unit Tests (`test_libraries.py`)
-
-- **ResizeWithAspectRatio function testing**
-  - Resize by width while maintaining aspect ratio
-  - Resize by height while maintaining aspect ratio
-  - No resize parameters (returns unchanged image)
-  - Small image resizing
-  - Color channel preservation
-
-- **FileVideoStream class testing**
-  - Initialization with invalid paths
-  - Queue initialization and size configuration
-  - Default queue size verification
-  - Thread daemon flag validation
-  - Initial state verification
-
-- **Frametime calculation testing**
-  - 60fps frametime calculation (16.67ms)
-  - 120fps frametime calculation (8.33ms)
-  - Stutter threshold calculation for 60fps
-  - Severe stutter threshold calculation for 120fps
-
-- **Histogram bucket testing** (`HISTOGRAM_BUCKETS`, used by both the on-screen histogram and the CSV export)
-  - 60fps histogram bucket ranges
-  - 120fps histogram bucket ranges
-  - Buckets are contiguous and the ideal frametime lands in "Perfect"
-  - Performance category thresholds at the bucket edges
-  - Frame counting per bucket
-
-- **FPS counter testing** (`FpsCounter`)
-  - Window spans one second at both 60fps and 120fps
-  - Smooth video reaches the full target FPS
-  - Repeated frames lower the FPS; old frames leave the window
-
-- **Image processing testing**
-  - BGR to grayscale conversion
-  - Frame difference calculation
-  - Identical frame difference detection
-
-### Integration Tests (`test_integration.py`)
-
-- **Video generation testing**
-  - Test video creation with various parameters
-  - Video with duplicate frames (simulating frame drops)
-  - Frame count verification
-  - OpenCV compatibility validation
-
-- **Command-line argument parsing** (runs `Frametime Analyser.py` in a subprocess)
-  - Invalid FPS value rejection
-  - Unknown argument rejection
-  - Missing video file rejection
-  - `-watermark` without a path rejection
-  - Valid arguments are not exercised end to end, because they start video playback
-
-- **Output file generation**
-  - Analyzed video filename generation
-  - Histogram CSV filename generation
-  - Full path handling
-
-- **Performance metrics**
-  - FPS calculation from frame lists
-  - Average frametime calculation
-  - Stutter detection logic
-  - Moderate vs severe stutter classification
-
-- **Data structure testing**
-  - Frametime graph initialization
-  - Histogram buffer size (30-minute capacity)
+Tests that need FFmpeg are skipped when neither `ffmpeg` on PATH nor `imageio-ffmpeg` is available.
 
 ## Test Files
 
-- `tests/__init__.py` - Test runner and discovery
-- `tests/test_libraries.py` - Unit tests for core functions
-- `tests/test_integration.py` - Integration and system tests
+| File | Covers |
+|---|---|
+| `tests/helpers.py` | Generators for test videos with known timing: repeated frames, overlays, and V-Sync-off tearing from a flip schedule |
+| `tests/test_stats.py` | Histogram buckets for any target FPS, FPS colours, the FPS counter, and the 30-minute frametime window (mean, percentiles, lows, CDF) |
+| `tests/test_video.py` | Canvas fitting, OpenCV and FFmpeg decoding (including letterboxing and stopping early), OpenCV and FFmpeg writers, and error handling in the background writer |
+| `tests/test_detection.py` | The 128×72 analysis image, frame differences, ROI/ignore masks, and the tear detector (tears, catch-up rows, learned static rows) |
+| `tests/test_analyser.py` | Duplicate detection, the noise floor, static scenes, stutter thresholds (including floating-point edge cases), torn-frame timing |
+| `tests/test_overlay.py` | Layer compositing and caching, graphs, and every overlay option at several target FPS values, single and compare |
+| `tests/test_cli.py` | Argument parsing, the legacy entry points, and end-to-end runs: exact frametimes for known drops (OpenCV and FFmpeg paths), report, output folder, FPS detection, facecam `--ignore`, static scenes, tearing, compare, and a missing capture device |
 
 ## Adding New Tests
 
-When adding new features, please include corresponding tests:
+1. Put tests next to the module they cover (`test_<module>.py`)
+2. For behaviour that depends on real video, generate a small clip with the helpers in `tests/helpers.py` and run `cli.main([...])` with `--no-display`
+3. Include docstrings explaining what each test validates
 
-1. **Unit tests** for individual functions in `test_libraries.py`
-2. **Integration tests** for feature workflows in `test_integration.py`
-3. Follow existing naming conventions: `test_<feature_name>`
-4. Include docstrings explaining what each test validates
+## Continuous Integration
 
-## Before Committing
+GitHub Actions (`.github/workflows/tests.yml`) lints with ruff and runs the tests on Windows with Python 3.11 and 3.13 for every push and pull request. For version tags (`v*`) and manual runs, it also builds the standalone `.exe` and uploads it as an artifact.
 
-There is no CI set up for this repository, so run the tests yourself before committing.
+## Building the Executable Locally
 
 ```bash
-# Quick test run before commit
-python -m unittest discover tests -v
-
-# Coverage report in the terminal
-pytest tests/ --cov=libraries --cov-report=term-missing
+pip install .[build]
+python scripts/build_exe.py
+dist/frametime-analyser.exe --version
 ```
-
-Coverage only measures `libraries.py`. `Frametime Analyser.py` can't be imported (its name contains a space, and it starts analysing on import), so logic that needs testing belongs in `libraries.py`.
