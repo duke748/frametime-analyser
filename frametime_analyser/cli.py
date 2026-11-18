@@ -10,7 +10,7 @@ import cv2
 
 from . import __version__
 from .analyser import DEFAULT_MIN_DIFF, DEFAULT_STATIC_AFTER, FrametimeAnalyser
-from .detection import ANALYSIS_SIZE, AnalysisMask, analysis_image, frame_difference, parse_rect
+from .detection import ANALYSIS_SIZE, AnalysisMask, analysis_image, frame_change, parse_rect
 from .overlay import CompareOverlay, Overlay, load_watermark
 from .report import Recorder, export_summary_csv, write_report
 from .video import (
@@ -96,8 +96,8 @@ def build_arg_parser():
     g.add_argument("--ignore", type=rect_type, action="append", default=[], metavar="X,Y,W,H",
                    help="ignore this region, e.g. a webcam or chat overlay (repeatable)")
     g.add_argument("--min-diff", type=non_negative_float, default=DEFAULT_MIN_DIFF, metavar="N",
-                   help=f"smallest frame difference (0-255) that counts as a new frame "
-                        f"(default {DEFAULT_MIN_DIFF})")
+                   help=f"smallest change (0-255, peak of the difference) that counts as a new frame; raise it if "
+                        f"compression noise in still scenes counts as new frames (default {DEFAULT_MIN_DIFF})")
     g.add_argument("--static-after", type=non_negative_float, default=DEFAULT_STATIC_AFTER,
                    metavar="SECONDS",
                    help=f"repeats longer than this are a static scene and left out of the statistics "
@@ -319,10 +319,28 @@ def new_analyser(args, fps, mask, **kwargs):
 
 
 def measure(analyser, frame, prev, mask):
-    if analyser.tear_detector is not None:
-        diff, rows = frame_difference(frame.gray, prev.gray, mask, rows=True)
-        return analyser.process(diff, rows)
-    return analyser.process(frame_difference(frame.gray, prev.gray, mask))
+    change = frame_change(frame.gray, prev.gray, mask, rows=True)
+    return analyser.process(change.mean, change.rows, change.peak)
+
+
+TEARING_WARNING = ("Warning: {label} looks like it was recorded with V-Sync off ({pct:.0f}% of frames torn). "
+                   "Each torn frame is counted as a new frame, so FPS is overstated. "
+                   "Re-run with --detect-tears for accurate results.")
+
+
+class TearingWarning:
+    """Warn once, a few seconds in, if the video tears without --detect-tears."""
+
+    def __init__(self, label):
+        self.label = label
+        self.shown = False
+
+    def check(self, a, final=False):
+        if self.shown or not a.looks_torn() or (not final and a.frames_processed < 5 * a.target_fps):
+            return
+        self.shown = True
+        pct = 100.0 * a.tearing_share()
+        print(TEARING_WARNING.format(label=self.label, pct=pct))
 
 
 # --- Single video ----------------------------------------------------------------
@@ -374,6 +392,7 @@ def run(args):
     recorder = Recorder(paths.frametimes_csv)
     pacer = Pacer(target_fps) if display and not live else None
     progress = Progress(fvs.frame_count())
+    tearing = TearingWarning("this video")
 
     start = time.perf_counter()
     try:
@@ -384,6 +403,7 @@ def run(args):
             for f in measure(analyser, frame, prev, mask):
                 recorder.add(f)
             prev = frame
+            tearing.check(analyser)
 
             if overlay is not None:
                 annotated = frame.canvas  # Each decoded frame is a new array, so draw on it directly
@@ -415,6 +435,7 @@ def run(args):
         print(f"Warning: {fvs.dropped} captured frames were dropped because processing fell behind. "
               f"Results are unreliable; try --no-display or --no-video.")
     close_output_video(writer, paths.video)
+    tearing.check(analyser, final=True)
     save_results(label, paths, analyser, recorder, not args.no_report)
     return 0
 
@@ -515,6 +536,7 @@ def run_compare(args):
     print(f"Processed {analysers[0].frames_processed} frame pairs in {elapsed:.1f}s")
     close_output_video(writer, video_path)
     for v, p, a, r in zip(videos, paths, analysers, recorders):
+        TearingWarning(f"'{os.path.basename(v)}'").check(a, final=True)
         save_results(v, p, a, r, not args.no_report)
     return 0
 

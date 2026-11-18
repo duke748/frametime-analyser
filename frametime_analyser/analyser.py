@@ -6,12 +6,15 @@ import numpy as np
 from .detection import TearDetector
 from .stats import FpsCounter, FrametimeWindow
 
-# A frame is a repeat when its difference from the previous frame is below
-# this fraction of the recent average difference...
+# A frame is a repeat when its change from the previous frame is below this
+# fraction of the recent average change...
 DUPLICATE_THRESHOLD = 0.25
-# ...or below this absolute floor (mean 0-255 grey difference), so a still
-# scene's compression noise isn't mistaken for new frames.
-DEFAULT_MIN_DIFF = 0.1
+# ...or below this floor, so a still scene's compression noise isn't mistaken
+# for new frames. It applies to the peak change (see detection.frame_change),
+# 0-255; compression noise is typically 0.3-0.7.
+DEFAULT_MIN_DIFF = 0.75
+# Floor for per-row mean differences in tear detection
+ROW_MIN_DIFF = 0.1
 # Repeats lasting longer than this are a static scene (pause menu, paused
 # video) rather than a freeze, and are left out of the statistics.
 DEFAULT_STATIC_AFTER = 2.0
@@ -47,14 +50,17 @@ class FrametimeAnalyser:
         self.static_after_ms = static_after * 1000 if static_after else None
         self.moderate_threshold = self.target_frametime * STUTTER_MULTIPLIER
         self.severe_threshold = self.target_frametime * SEVERE_STUTTER_MULTIPLIER
-        self.tear_detector = None
-        if detect_tears:
-            from .detection import ANALYSIS_SIZE
-            self.tear_detector = TearDetector(picture_rows or (0, ANALYSIS_SIZE[1]))
+        from .detection import ANALYSIS_SIZE
+        rows = picture_rows or (0, ANALYSIS_SIZE[1])
+        self.tear_detector = TearDetector(rows) if detect_tears else None
+        # Without tear detection, still watch for tearing so the user can be
+        # warned: it makes every torn frame count as new, overstating FPS
+        self.tear_probe = None if detect_tears else TearDetector(rows)
 
         self.frames_processed = 0   # Video frames processed (frame 0 is only a reference)
         self.unique_frames = 0      # New frames seen, including any after a static scene
-        self.moving_avg_diff = None
+        self.moving_avg_diff = None  # Of the mean change (tear detection rows)
+        self.moving_avg_peak = None  # Of the peak change (new frame or repeat)
         self.last_new_refresh = 0   # When the latest new frame started, in refreshes
         self.in_static = False
         self.static_scenes = 0
@@ -79,26 +85,51 @@ class FrametimeAnalyser:
         """Index of the most recently processed video frame."""
         return self.frames_processed
 
+    def tearing_share(self):
+        """With tear detection off: the share of video frames that completed a
+        tear from the frame before (only tearing does that; a static sky above
+        a moving foreground doesn't)."""
+        if self.tear_probe is None or not self.frames_processed:
+            return 0.0
+        return self.tear_probe.catch_ups / self.frames_processed
+
+    def looks_torn(self):
+        """True if tear detection is off but the video shows a lot of tearing
+        (V-Sync off), so the FPS is overstated."""
+        return self.frames_processed >= 120 and self.tearing_share() >= 0.1
+
     @property
     def counted_frames(self):
         """New frames whose frametime counts towards the statistics."""
         return self.unique_frames - self.static_scenes
 
-    def process(self, diff, rows=None):
-        """Record one video frame. `rows` (per-row differences) is needed for
-        tear detection. Returns the list of new frames it contains (usually
-        zero or one)."""
+    def process(self, diff, rows=None, peak=None):
+        """Record one video frame.
+
+        diff: mean change from the previous frame. peak: peak change (see
+        detection.frame_change); when given, it decides new frame vs repeat,
+        else diff does. rows: per-row changes, needed for tear detection.
+        Returns the list of new frames this video frame contains (usually zero
+        or one)."""
         self.frames_processed += 1
         k = self.frames_processed
         if self.moving_avg_diff is None:
             self.moving_avg_diff = diff
-        threshold = max(self.min_diff, DUPLICATE_THRESHOLD * self.moving_avg_diff)
+        level = diff if peak is None else peak
+        if self.moving_avg_peak is None:
+            self.moving_avg_peak = level
 
-        if self.tear_detector is not None and rows is not None:
-            positions = self.tear_detector.detect(rows, threshold)
-        else:
-            positions = [0.0] if diff >= threshold else []
+        positions = None
+        if rows is not None:
+            row_threshold = max(ROW_MIN_DIFF, DUPLICATE_THRESHOLD * self.moving_avg_diff)
+            if self.tear_detector is not None:
+                positions = self.tear_detector.detect(rows, row_threshold)
+            elif self.tear_probe is not None:
+                self.tear_probe.detect(rows, row_threshold)
+        if positions is None:  # Whole-frame rule
+            positions = [0.0] if level >= max(self.min_diff, DUPLICATE_THRESHOLD * self.moving_avg_peak) else []
         self.moving_avg_diff = 0.75 * self.moving_avg_diff + 0.25 * diff
+        self.moving_avg_peak = 0.75 * self.moving_avg_peak + 0.25 * level
 
         new_frames = []
         for pos in positions:

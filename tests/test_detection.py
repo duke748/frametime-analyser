@@ -9,6 +9,7 @@ from frametime_analyser.detection import (
     Rect,
     TearDetector,
     analysis_image,
+    frame_change,
     frame_difference,
     parse_rect,
 )
@@ -131,6 +132,27 @@ class TestTearDetector(unittest.TestCase):
         d = TearDetector((0, 72))
         self.assertEqual(d.detect(self.rows([(40, 41)]), 10), [])
 
+    def test_scattered_changes_fall_back(self):
+        """A band touching neither edge isn't tearing: let the caller decide"""
+        d = TearDetector((0, 72))
+        self.assertIsNone(d.detect(self.rows([(20, 40)]), 10))
+        self.assertEqual(d.fragmented_frames, 1)
+
+    def test_catch_up_ending_above_tear(self):
+        """Flat rows just above the tear line may not change while catching up"""
+        d = TearDetector((0, 72))
+        d.detect(self.rows([(30, 72)]), 10)
+        self.assertEqual(d.detect(self.rows([(0, 24)]), 10), [])
+
+    def test_learned_static_rows_recover(self):
+        """Heavy tearing doesn't permanently hide rows from the detector"""
+        d = TearDetector((0, 72))
+        for i in range(200):
+            tear = 6 + (i * 23) % 60
+            d.detect(self.rows([(tear, 72)]), 10)
+            d.detect(self.rows([(0, tear)]), 10)
+        self.assertEqual(int((d.static_score >= d.static_limit).sum()), 0)
+
     def test_letterboxed_position(self):
         d = TearDetector((12, 60))
         rows = self.rows([(36, 60)])
@@ -144,6 +166,19 @@ class TestTearDetector(unittest.TestCase):
         results = [d.detect(self.rows([(8, 72)]), 10) for _ in range(40)]
         self.assertEqual(results[-1], [0.0])
         self.assertTrue(all(len(r) == 1 for r in results))
+
+    def test_frame_change_peak(self):
+        """A small local change has a low mean but a high peak; noise has neither"""
+        rng = np.random.default_rng(0)
+        a = rng.integers(100, 103, (72, 128), dtype=np.uint8)  # Codec-like noise
+        noise = rng.integers(100, 103, (72, 128), dtype=np.uint8)
+        moved = a.copy()
+        moved[30:42, 60:72] = 200  # A small object (1.5% of the frame) moved
+        n, m = frame_change(a, noise), frame_change(a, moved)
+        self.assertLess(m.mean, 2)
+        self.assertGreater(m.peak, 5 * n.peak)
+        self.assertIsNone(n.rows)
+        self.assertEqual(len(frame_change(a, moved, AnalysisMask(1920, 1080), rows=True).rows), 72)
 
     def test_rows_in_analysis_size(self):
         self.assertEqual(ANALYSIS_SIZE, (128, 72))

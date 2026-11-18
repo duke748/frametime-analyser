@@ -64,7 +64,7 @@ class TestArgumentParsing(TempDirTestCase):
         self.assertIsNone(a.fps)  # Read from the video later
         self.assertFalse(a.delta_plot or a.detect_stutters or a.no_display or a.no_video)
         self.assertEqual((a.encoder, a.decoder, a.ignore, a.min_diff, a.static_after),
-                         ("auto", "auto", [], 0.1, 2.0))
+                         ("auto", "auto", [], 0.75, 2.0))
 
     def test_any_target_fps(self):
         for fps in (30, 60, 120, 144, 240):
@@ -284,6 +284,19 @@ class TestEndToEnd(TempDirTestCase):
         summary = read_summary(cli.output_paths(video).summary_csv)
         self.assertGreater(float(summary["Torn Frame Percentage"][0].rstrip("%")), 90)
 
+    def test_tearing_warning_without_detect_tears(self):
+        flips = tearing_schedule(game_fps=50, frames=360)
+        video = self.path("torn.mp4")
+        write_torn_video(video, flips, 360)
+        code, out = run_main(video, "60", "--no-display", "--no-video", "--decoder", "opencv")
+        self.assertEqual(code, 0)
+        self.assertIn("V-Sync off", out)
+        self.assertEqual(out.count("V-Sync off"), 1)  # Warned once
+        summary = read_summary(cli.output_paths(video).summary_csv)
+        self.assertIn("Warning", summary)
+        with open(cli.output_paths(video).report, encoding="utf-8") as f:
+            self.assertIn("--detect-tears", f.read())
+
     def test_vsync_video_has_no_tears(self):
         ids = dropped_frame_ids(120)
         video = self.path("vsync.mp4")
@@ -294,6 +307,8 @@ class TestEndToEnd(TempDirTestCase):
         self.assertEqual([round(float(r["frametime_ms"]) / (1000 / 60)) for r in rows],
                          expected_frametime_counts(ids))
         self.assertTrue(all(r["tear_position"] == "" for r in rows))
+        code, out = run_main(video, "60", "--no-display", "--no-video")
+        self.assertNotIn("V-Sync off", out)
 
     def test_bad_capture_device(self):
         code, out = run_main("--capture", "97", "--no-display", "--no-video")

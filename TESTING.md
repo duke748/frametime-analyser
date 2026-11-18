@@ -34,10 +34,10 @@ Tests that need FFmpeg are skipped when neither `ffmpeg` on PATH nor `imageio-ff
 | `tests/helpers.py` | Generators for test videos with known timing: repeated frames, overlays, and V-Sync-off tearing from a flip schedule |
 | `tests/test_stats.py` | Histogram buckets for any target FPS, FPS colours, the FPS counter, and the 30-minute frametime window (mean, percentiles, lows, CDF) |
 | `tests/test_video.py` | Canvas fitting, OpenCV and FFmpeg decoding (including letterboxing and stopping early), OpenCV and FFmpeg writers, and error handling in the background writer |
-| `tests/test_detection.py` | The 128×72 analysis image, frame differences, ROI/ignore masks, and the tear detector (tears, catch-up rows, learned static rows) |
-| `tests/test_analyser.py` | Duplicate detection, the noise floor, static scenes, stutter thresholds (including floating-point edge cases), torn-frame timing |
+| `tests/test_detection.py` | The 128×72 analysis image, mean and peak frame changes, ROI/ignore masks, and the tear detector (tears, catch-up rows, learned static rows that can recover, fallback for scattered changes) |
+| `tests/test_analyser.py` | Duplicate detection (mean and peak), the noise floor, static scenes, stutter thresholds (including floating-point edge cases), torn-frame timing, and the V-Sync-off warning (including a static sky that must not trigger it) |
 | `tests/test_overlay.py` | Layer compositing and caching, graphs, and every overlay option at several target FPS values, single and compare |
-| `tests/test_cli.py` | Argument parsing, the legacy entry points, and end-to-end runs: exact frametimes for known drops (OpenCV and FFmpeg paths), report, output folder, FPS detection, facecam `--ignore`, static scenes, tearing, compare, and a missing capture device |
+| `tests/test_cli.py` | Argument parsing, the legacy entry points, and end-to-end runs: exact frametimes for known drops (OpenCV and FFmpeg paths), report, output folder, FPS detection, facecam `--ignore`, static scenes, tearing, the tearing warning, compare, and a missing capture device |
 
 ## Adding New Tests
 

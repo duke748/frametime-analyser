@@ -52,6 +52,13 @@ class TestDuplicateDetection(unittest.TestCase):
         self.assertEqual(fts, [])
         self.assertEqual(a.unique_frames, 10)
 
+    def test_peak_decides_when_given(self):
+        """With a peak measure, a tiny mean change can still be a new frame"""
+        a = FrametimeAnalyser(60)
+        for i in range(20):
+            a.process(0.05, peak=8.0 if i % 2 == 0 else 0.5)
+        self.assertEqual(a.unique_frames, 10)
+
     def test_floor_can_be_disabled(self):
         a = FrametimeAnalyser(60, min_diff=0)
         feed(a, "d" * 5, repeat=0.05)  # Noise only: every frame looks new
@@ -134,6 +141,31 @@ class TestTearing(unittest.TestCase):
         self.assertAlmostEqual(new[0].frametime_ms, 1.5 * FT60, places=2)
         self.assertEqual(a.torn_frames, 1)
         self.assertAlmostEqual(a.summary()["torn_pct"], 50)
+
+    def test_tearing_probe_warns_without_tear_detection(self):
+        a = FrametimeAnalyser(60)
+        for i in range(200):
+            tear = 10 + (i * 17) % 50
+            a.process(20.0, self.rows(tear))
+            r = np.zeros(72)
+            r[:tear] = 40.0
+            a.process(20.0, r)
+        self.assertTrue(a.looks_torn())
+        self.assertEqual(a.torn_frames, 0)  # Not counted as torn: tear detection is off
+
+    def test_no_warning_for_static_sky(self):
+        """V-Sync on, with a still sky above a moving foreground: each new frame
+        changes only the bottom, which looks like a tear but never catches up"""
+        a = FrametimeAnalyser(60)
+        for i in range(200):
+            a.process(20.0, self.rows(30) if i % 2 else np.zeros(72))
+        self.assertFalse(a.looks_torn())
+
+    def test_no_warning_for_vsync_footage(self):
+        a = FrametimeAnalyser(60)
+        for i in range(200):
+            a.process(20.0, self.rows(0) if i % 3 else np.zeros(72))
+        self.assertFalse(a.looks_torn())
 
     def test_without_rows_falls_back(self):
         a = FrametimeAnalyser(60, detect_tears=True)
