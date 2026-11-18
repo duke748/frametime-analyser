@@ -35,3 +35,8 @@ tests/*.avi
 htmlcov/
 .coverage
 .coverage.*
+
+# Packaging
+build/
+dist/
+*.egg-info/

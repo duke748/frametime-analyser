@@ -1,96 +1,58 @@
 # Testing Guide
 
-The Frametime Analyser project includes a test suite covering unit and integration tests, including an end-to-end run on a generated video.
+The test suite covers every module, plus end-to-end runs on generated videos with known frame timing: dropped frames, a pause, a facecam overlay, two captures to compare, and a V-Sync-off capture with tearing.
 
 ## Running Tests
 
-Run all test commands from the repository root (the folder containing `frametime_analyser.py`).
-
-### Install dependencies
+Run commands from the repository root.
 
 ```bash
+# Install the runtime and test dependencies (pytest, pytest-cov, ruff)
 pip install -r requirements-dev.txt
-```
 
-This installs the runtime dependencies plus `pytest` and `pytest-cov`.
+# Lint
+ruff check .
 
-### Using pytest (recommended)
-
-```bash
 # Run all tests
-pytest tests/ -v
+pytest -v
 
-# Run with coverage report (written to htmlcov/)
-pytest tests/ --cov=libraries --cov=frametime_analyser --cov-report=html
+# With coverage
+pytest --cov --cov-report=term-missing   # or --cov-report=html (written to htmlcov/)
 
-# Run specific test file
-pytest tests/test_libraries.py -v
+# One file
+pytest tests/test_analyser.py -v
 ```
 
-### Using unittest (built-in)
+The built-in runner works too: `python -m unittest discover tests -v`.
 
-```bash
-# Run all tests
-python -m unittest discover tests -v
-
-# Run specific test file
-python -m unittest tests.test_libraries
-```
-
-## Test Coverage
-
-### Unit Tests (`test_libraries.py`)
-
-- **Resizing**: `ResizeWithAspectRatio`, and `fit_to_canvas` letterboxing/pillarboxing any shape onto the 1280×720 canvas
-- **FileVideoStream**: queue setup, initial state, and reading every frame of a real video before returning `None`
-- **Frame difference**: identical and different frames
-- **Histogram buckets** (`get_histogram_buckets`, used by the overlay and the CSV export)
-  - 60fps and 120fps bucket ranges
-  - Buckets for other target FPS values scale from the target frametime
-  - Buckets are contiguous, the ideal frametime lands in "Perfect", and long freezes land in "Bad"
-  - Bucket range formatting
-- **FPS counter** (`FpsCounter`): one-second window at any target FPS, repeated frames lower the FPS
-- **FPS colours** (`fps_color`): thresholds scale with the target FPS
-- **Frametime window** (`FrametimeWindow`)
-  - Mean, average FPS, percentiles, 1%/0.1% lows and CDF
-  - Only the most recent 30 minutes of video are kept
-  - Bucket counts agree with `count_frames_per_bucket`
-
-### Integration Tests (`test_integration.py`)
-
-- **Command-line parsing** (`parse_args`)
-  - Defaults, any target FPS from 1 to 1000, invalid FPS values
-  - Both `--flag` and legacy `-flag` spellings, and the FPS value after options
-  - Missing video or watermark files, missing option values, unknown options
-- **Legacy entry point**: `Frametime Analyser.py --help`, error exit codes and a headless run in a subprocess
-- **Analyser** (`FrametimeAnalyser`), fed frame differences directly
-  - Smooth, half-rate and 120fps video
-  - Repeated frames lengthen the frametime
-  - Moderate and severe stutter detection
-  - Frame-to-frame delta and summary statistics
-  - Every overlay option draws at several target FPS values
-- **End to end**: a generated video with known dropped frames is analysed with `--no-display`; the per-frame CSV must match the drops exactly, and the summary CSV and output video are checked
-- **FPS mismatch warning** when the video's frame rate differs from the target
+Tests that need FFmpeg are skipped when neither `ffmpeg` on PATH nor `imageio-ffmpeg` is available.
 
 ## Test Files
 
-- `tests/__init__.py` - Test runner and discovery
-- `tests/test_libraries.py` - Unit tests for `libraries.py`
-- `tests/test_integration.py` - Integration and end-to-end tests for `frametime_analyser.py`
+| File | Covers |
+|---|---|
+| `tests/helpers.py` | Generators for test videos with known timing: repeated frames, overlays, and V-Sync-off tearing from a flip schedule |
+| `tests/test_stats.py` | Histogram buckets for any target FPS, FPS colours, the FPS counter, and the 30-minute frametime window (mean, percentiles, lows, CDF) |
+| `tests/test_video.py` | Canvas fitting, OpenCV and FFmpeg decoding (including letterboxing and stopping early), OpenCV and FFmpeg writers, and error handling in the background writer |
+| `tests/test_detection.py` | The 128×72 analysis image, frame differences, ROI/ignore masks, and the tear detector (tears, catch-up rows, learned static rows) |
+| `tests/test_analyser.py` | Duplicate detection, the noise floor, static scenes, stutter thresholds (including floating-point edge cases), torn-frame timing |
+| `tests/test_overlay.py` | Layer compositing and caching, graphs, and every overlay option at several target FPS values, single and compare |
+| `tests/test_cli.py` | Argument parsing, the legacy entry points, and end-to-end runs: exact frametimes for known drops (OpenCV and FFmpeg paths), report, output folder, FPS detection, facecam `--ignore`, static scenes, tearing, compare, and a missing capture device |
 
 ## Adding New Tests
 
-When adding new features, please include corresponding tests:
-
-1. **Unit tests** for helpers in `libraries.py` go in `test_libraries.py`
-2. **Integration tests** for `frametime_analyser.py` go in `test_integration.py`. Import it with `import frametime_analyser`; importing has no side effects
-3. Follow existing naming conventions: `test_<feature_name>`
-4. Include docstrings explaining what each test validates
+1. Put tests next to the module they cover (`test_<module>.py`)
+2. For behaviour that depends on real video, generate a small clip with the helpers in `tests/helpers.py` and run `cli.main([...])` with `--no-display`
+3. Include docstrings explaining what each test validates
 
 ## Continuous Integration
 
-GitHub Actions runs the test suite with coverage on every push and pull request (`.github/workflows/tests.yml`). Run the tests locally before pushing:
+GitHub Actions (`.github/workflows/tests.yml`) lints with ruff and runs the tests on Windows with Python 3.11 and 3.13 for every push and pull request. For version tags (`v*`) and manual runs, it also builds the standalone `.exe` and uploads it as an artifact.
+
+## Building the Executable Locally
 
 ```bash
-pytest tests/ --cov=libraries --cov=frametime_analyser --cov-report=term-missing
+pip install .[build]
+python scripts/build_exe.py
+dist/frametime-analyser.exe --version
 ```

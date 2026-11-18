@@ -1,6 +1,6 @@
 # Frametime Analyser (Enhanced Fork)
 
-**Frametime Analyser** detects repeated frames in game footage to work out FPS, frametimes and stutter. It plays the video back with performance graphs overlaid, saves an annotated copy, and exports the results to CSV.
+**Frametime Analyser** detects repeated frames in game footage to work out FPS, frametimes, stutter and tearing. It plays the video back with performance graphs overlaid, saves an annotated copy, and exports the results to CSV and an HTML report. It can also compare two captures side by side, or analyse live from a capture card.
 
 ![Frametime Analyser overlay on Red Dead Redemption 2 footage](Media/RDR2.gif)
 
@@ -12,18 +12,18 @@ This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](
 
 ### Major Enhancements Added
 
-- **Python 3 compatibility** (upgraded from Python 2.7)
-- **Any target frame rate** (60, 120, 144, 240, ...) with dynamic scaling
-- **Video output** with embedded analysis overlays
-- **Command-line options** with `--help`
-- **Headless mode** (`--no-display`) that analyses as fast as the CPU allows
-- **Real-time graphs**: Frametime, FPS, and optional Frame Delta plot
-- **Frametime Distribution Histogram** with color-coded performance buckets
-- **Cumulative Distribution Function (CDF)** smoothness graph
-- **Average FPS, 1% low and 0.1% low FPS** over the last 30 minutes of video
-- **CSV export** of summary statistics and of every frame's frametime
-- **Micro-stutter detection** via Frame-to-Frame Delta analysis
+- **Python 3**, installable with `pip`, or as a standalone Windows `.exe`
+- **Any target frame rate** (60, 120, 144, 240, ...), read from the video automatically
+- **Fast**: FFmpeg decoding and encoding (including NVIDIA/Intel/AMD GPU encoders); analysis-only runs at over 2,000 fps on 1080p
+- **Side-by-side comparison** of two captures (`--compare`)
+- **Live analysis** from a capture card (`--capture`)
+- **Tear detection** for V-Sync-off footage (`--detect-tears`, experimental)
 - **Stutter detection** for shader compilation and traversal stutters
+- **Static scene handling**: pause menus don't wreck the statistics
+- **Region of interest / ignore regions** for webcams and chat overlays
+- **Real-time graphs**: Frametime, FPS, Frame Delta (micro-stutter), Smoothness (CDF) and a frametime histogram
+- **Average FPS, 1% low and 0.1% low FPS** over the last 30 minutes of video
+- **Outputs**: annotated video, summary CSV, per-frame CSV and an HTML report with charts
 
 ---
 
@@ -32,7 +32,7 @@ This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](
 ### Real-Time Visual Analysis
 
 1. **Frametime Graph**
-   - Shows the frametime in milliseconds of each unique frame
+   - Shows the frametime in milliseconds of each new frame
    - Scale: 0 to 2.5× target frametime (e.g. 0–41.7ms at 60fps), with a grey reference line at the target frametime
    - Helps identify individual frame drops and stutter events
 
@@ -44,23 +44,17 @@ This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](
 
 3. **Cumulative Distribution Function / Smoothness Graph**
    - **What it shows**: The percentage of frames rendered at or faster than a given frametime
-   - **X-axis**: Frametime in milliseconds (0 to 3× target frametime)
-   - **Y-axis**: Cumulative percentage (0-100%)
-   - **Interpretation**:
-     - **Steep curve** = Consistent performance (most frames cluster around target frametime)
-     - **Gradual curve** = Inconsistent performance (frames spread across many timings)
-   - **Reference lines**:
-     - Vertical green line at target frametime (16.7ms for 60fps, 8.3ms for 120fps)
-     - Horizontal gray lines at 50% (median) and 95% (95th percentile)
-   - **Example**: If the curve reaches 95% at the target frametime line, then 95% of your frames hit the target - excellent consistency!
-   - This is the same metric used by CapFrameX's "Smoothness Graph"
+   - **X-axis**: Frametime in milliseconds (0 to 3× target frametime); **Y-axis**: Cumulative percentage
+   - **Steep curve** = consistent performance; **gradual curve** = frames spread across many timings
+   - Reference lines: green at the target frametime, grey at 50% (median) and 95%
+   - **Example**: If the curve reaches 95% at the target frametime line, then 95% of your frames hit the target
+   - The same metric as CapFrameX's "Smoothness Graph"
 
 4. **FPS Graph (Bottom)**
    - FPS over the last ~10 seconds of video
    - Scaled from 0 to the target FPS, with reference lines at 30, 60, 120 and 240 where they fit
 
 5. **Frametime Distribution Histogram**
-   - Shows percentage distribution across 5 performance buckets:
 
      | Bucket | 60fps | 120fps | Other targets (× target frametime) | Color |
      |---|---|---|---|---|
@@ -70,106 +64,138 @@ This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](
      | **Stutter** | 35–50ms | 17–25ms | 2.1–3× | Orange |
      | **Bad** | 50ms+ | 25ms+ | 3×+ | Red |
 
-   - Displays both bar graph and percentage table
-   - Shows average frametime, average FPS and 1% low FPS above the graph
+   - Bar graph and percentage table, with average frametime, average FPS and 1% low FPS above it
 
 6. **Stutter Detection (Optional)**
-   - Automatically detects and highlights severe frametime spikes
-   - Two severity levels:
-     - **Moderate Stutters**: 2.5× target frametime (≥41.7ms @ 60fps, ≥20.8ms @ 120fps) - Orange markers
-     - **Severe Stutters**: 4× target frametime (≥66.7ms @ 60fps, ≥33.3ms @ 120fps) - Red markers
-   - Visual indicators:
-     - Vertical lines on the frametime graph at the stuttering frames
-     - Counter showing total/severe/moderate stutter count
-   - Useful for detecting:
-     - Shader compilation stutters (first-time asset loading)
-     - Traversal stutters (moving to new game areas)
-     - Texture streaming issues
-   - Statistics exported to CSV, including average and worst-case stutter severity
+   - **Moderate**: ≥2.5× target frametime (≥41.7ms @ 60fps) - orange markers
+   - **Severe**: ≥4× target frametime (≥66.7ms @ 60fps) - red markers
+   - Marked on the frametime graph, counted on screen, listed in the CSV and report
+   - Useful for shader compilation stutters, traversal stutters and texture streaming issues
    - Enable with `--detect-stutters`
+
+7. **Tear Detection (Optional, experimental)**
+   - For footage recorded with **V-Sync off**, where the game can swap frames mid-refresh. The analyser compares frames row by row: rows above a tear are unchanged and rows below it are new.
+   - Torn frames are timed by where the tear is (a tear halfway down is half a refresh later), so frametimes stay accurate
+   - Shows the percentage of torn frames and marks each tear line at the right edge of the video
+   - Rows that never change (a static HUD) are learned and ignored; use `--ignore` for anything else static
+   - Enable with `--detect-tears`
+
+8. **Static Scenes**
+   - If the picture doesn't change for more than 2 seconds (`--static-after`), it's treated as a static scene, such as a pause menu, and left out of the statistics instead of counting as one enormous stutter. Shorter freezes are still counted.
+   - Tiny differences below `--min-diff` (compression noise on a still picture) never count as new frames
+
+### Comparing Two Captures
+
+`--compare other.mp4` plays two videos side by side, with each one's FPS and frametime graphs in its own colour, for example PC vs console or two graphics settings. Each video also gets its own CSV files and report. Use `--labels` to name them.
+
+### Live Capture
+
+`--capture 0` analyses straight from a capture card or other video device, until you press `q` or Ctrl+C. Outputs are named `capture_<date>-<time>_...` in the current folder (or `--output-dir`). If processing can't keep up, captured frames are dropped and you're warned; use `--no-video` or `--no-display` to lighten the load.
 
 ---
 
 ## Setup
 
-### Prerequisites
+### Option 1: Standalone Windows executable
 
-* **Python 3.11+**
-* **OpenCV** (`opencv-python`)
-* **NumPy**
+Download `frametime-analyser.exe` from the [Actions artifacts or releases](https://github.com/duke748/frametime-analyser/actions) and run it from a terminal. No Python needed; FFmpeg is included.
 
-### Installation
+### Option 2: Install with pip
+
+Requires **Python 3.11+**.
 
 ```bash
-# Clone this repository
 git clone https://github.com/duke748/frametime-analyser.git
 cd frametime-analyser
 
-# Create virtual environment (recommended)
 python -m venv .venv
 .venv\Scripts\activate  # Windows
 # source .venv/bin/activate  # Linux/Mac
 
-# Install dependencies
-pip install -r requirements.txt
+pip install .
 ```
+
+This installs the `frametime-analyser` command, plus NumPy, OpenCV and `imageio-ffmpeg` (which bundles FFmpeg). If you'd rather use your own FFmpeg, any `ffmpeg` on your PATH is used first.
 
 ---
 
 ## Usage
 
-### Basic Command
-
 ```bash
-python frametime_analyser.py <video_file> [fps] [options]
+frametime-analyser <video_file> [fps] [options]
 ```
 
-`python "Frametime Analyser.py" ...` still works too.
+`python -m frametime_analyser ...` and `python "Frametime Analyser.py" ...` also work.
 
-By default the video plays in a window **in real time**, so a 10-minute capture takes 10 minutes. Press **`q`** in the window to stop early; results up to that point are still saved. Use `--no-display` to skip the window and analyse as fast as possible.
+By default the video plays in a window **in real time**. Press **`q`** in the window to stop early; results up to that point are still saved. Use `--no-display` to skip the window and run as fast as possible, and `--no-video` as well if you only need the numbers.
 
-### Arguments
+### Options
 
-| Argument | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `video_file` | Yes | - | Path to the video file to analyse |
-| `fps` | No | 60 | Frame rate the video was recorded at (1–1000), e.g. `60`, `120`, `144` |
-| `--delta-plot` | No | off | Show the Frame-to-Frame Delta plot for micro-stutter detection |
-| `--detect-stutters` | No | off | Detect and highlight severe frametime spikes (shader/traversal stutters) |
-| `--watermark <file>` | No | off | Add a 32×32 watermark image to the bottom left corner (50% opacity) |
-| `--title <text>` | No | off | Add a centered title at the top of the screen with an opaque background |
-| `--no-display` | No | off | No preview window and no real-time playback; prints progress instead |
-| `--help` | No | - | Show all options |
+| Option | Description |
+|--------|-------------|
+| `video_file` | Video file to analyse |
+| `fps` | Frame rate the video was recorded at, 1–1000. Default: read from the video, else 60 |
+| **Analysis** | |
+| `--detect-stutters` | Detect and mark frametime spikes |
+| `--detect-tears` | Detect screen tearing in V-Sync-off footage (experimental) |
+| `--roi X,Y,W,H` | Only analyse this region (source video pixels) |
+| `--ignore X,Y,W,H` | Ignore this region, e.g. a webcam or chat overlay. Repeatable |
+| `--min-diff N` | Smallest difference (0–255) that counts as a new frame. Default 0.1 |
+| `--static-after SECONDS` | Repeats longer than this are a static scene, left out of the statistics. Default 2; 0 to always count them |
+| **Overlay** | |
+| `--delta-plot` | Show the frame-to-frame delta plot |
+| `--title <text>` | Title at the top of the video |
+| `--watermark <file>` | 32×32 image at 50% opacity |
+| **Output** | |
+| `--no-display` | No preview window, no real-time playback; prints progress |
+| `--no-video` | Don't write the annotated video (much faster) |
+| `--no-report` | Don't write the HTML report |
+| `--encoder` | `auto` (default: FFmpeg libx264, else OpenCV), `opencv`, `libx264`, `h264_nvenc`/`hevc_nvenc` (NVIDIA), `h264_qsv` (Intel), `h264_amf` (AMD) |
+| `--output-dir DIR` | Folder for output files. Default: next to the video |
+| **Input** | |
+| `--decoder` | `auto` (default: FFmpeg if available), `ffmpeg` or `opencv` |
+| `--hw-decode` | Decode on the GPU. Often *slower* than a fast CPU; try it for 4K HEVC on a slower CPU |
+| `--compare VIDEO_B` | Compare with a second video side by side |
+| `--labels A B` | Names for the two videos in `--compare` |
+| `--capture DEVICE` | Analyse live from a capture device (0 = first) |
+| `--capture-size WxH` | Resolution to request from the capture device |
+| `--fps N` | Same as the `fps` argument (handy with `--capture`) |
 
-The single-dash spellings from earlier versions (`-delta-plot`, `-detect-stutters`, `-watermark`, `-title`) still work. Options and the `fps` value can be given in any order.
+The single-dash spellings from earlier versions (`-delta-plot`, `-detect-stutters`, `-watermark`, `-title`) still work, and options can come in any order.
 
 ### Examples
 
 ```bash
-# Basic analysis at 60fps (default)
-python frametime_analyser.py gameplay.mp4
+# Basic analysis (frame rate read from the video)
+frametime-analyser gameplay.mp4
 
-# Analyse a 120fps or 144fps capture
-python frametime_analyser.py gameplay.mp4 120
-python frametime_analyser.py gameplay.mp4 144
+# Stutter detection and micro-stutter plot, encoded on an NVIDIA GPU
+frametime-analyser gameplay.mp4 --detect-stutters --delta-plot --encoder h264_nvenc
 
-# Micro-stutter (delta plot) and stutter detection
-python frametime_analyser.py gameplay.mp4 --delta-plot --detect-stutters
+# Just the numbers, as fast as possible
+frametime-analyser gameplay.mp4 --no-display --no-video --detect-stutters
 
-# Add a watermark and title
-python frametime_analyser.py gameplay.mp4 --watermark logo.png --title "Cyberpunk 2077 - Ultra Settings"
+# A stream recording with a facecam in the top-right corner
+frametime-analyser stream.mp4 --ignore 1500,0,420,300
 
-# Analyse a long capture as fast as possible, without the preview window
-python frametime_analyser.py gameplay.mp4 120 --detect-stutters --no-display
+# PC vs console, side by side
+frametime-analyser pc.mp4 --compare ps5.mp4 --labels "PC" "PS5" --title "Performance mode"
+
+# V-Sync off footage
+frametime-analyser vsync_off.mp4 144 --detect-tears
+
+# Live from the first capture device at 60fps
+frametime-analyser --capture 0 --fps 60 --capture-size 1920x1080
 ```
 
 ### Output Files
 
-Three files are written next to the input video:
+Written next to the input video (or in `--output-dir`):
 
-1. **`[filename]_analyzed.mp4`** - The video with overlay graphs and statistics. It is always 1280×720 at the target frame rate; other aspect ratios are letterboxed or pillarboxed to fit.
-2. **`[filename]_histogram.csv`** - Summary statistics (see below)
-3. **`[filename]_frametimes.csv`** - One row per unique frame: `unique_frame, video_frame, time_s, frametime_ms`. Use this to analyse or chart the data in other tools.
+1. **`[filename]_analyzed.mp4`** - The video with overlay graphs and statistics, 1280×720 at the target frame rate. Other aspect ratios are letterboxed or pillarboxed. With `--compare` this is `[a]_vs_[b]_compare.mp4`.
+2. **`[filename]_report.html`** - A self-contained report: summary figures, frametime and FPS charts for the whole run, the distribution, and the worst stutters
+3. **`[filename]_histogram.csv`** - Summary statistics (see below)
+4. **`[filename]_frametimes.csv`** - One row per new frame: `unique_frame, video_frame, time_s, frametime_ms, tear_position, after_static`
 
 Example `_histogram.csv`:
 ```csv
@@ -185,6 +211,8 @@ Average FPS,48.50
 99th Percentile Frametime (ms),50.00
 1% Low FPS,20.00
 0.1% Low FPS,12.00
+Static Scenes Excluded,0
+Static Time Excluded (s),0.0
 
 Stutter Detection Results
 Total Stutters Detected,28
@@ -203,10 +231,10 @@ Stutter,35-50,35,2.00%
 Bad,50+,23,1.32%
 ```
 
-*The stutter section only appears when `--detect-stutters` is used.*
+*The stutter section only appears with `--detect-stutters`, and a "Tear Detection Results" section with `--detect-tears`.*
 
-**How the statistics are calculated** (over the last 30 minutes of video):
-- **Average FPS** = unique frames ÷ seconds of video, which equals 1000 ÷ average frametime
+**How the statistics are calculated** (over the last 30 minutes of video, excluding static scenes):
+- **Average FPS** = new frames ÷ seconds of video, which equals 1000 ÷ average frametime
 - **99th percentile frametime**: 99% of frames were this fast or faster
 - **1% low / 0.1% low FPS** = 1000 ÷ the 99th / 99.9th percentile frametime
 
@@ -216,48 +244,44 @@ Bad,50+,23,1.32%
 
 ### Key Processing Steps
 
-1. **Frame Difference Calculation**
-   - Fit the frame onto a 1280×720 canvas, then downscale to 10% for faster processing
-   - Convert to grayscale
-   - Average absolute difference from the previous frame = `frame_diff`
+1. **Frame Difference**: each frame is shrunk to 128×72 greyscale (fitted the same way as the 1280×720 canvas, with letterbox bars and ignored regions masked out) and compared with the previous frame
+2. **Duplicate Detection**: a frame is a repeat if its difference is below 25% of the recent average difference, or below `--min-diff`
+3. **Frametime**: a new frame's frametime is the time since the previous new frame. With tear detection, the tear's position adds a fraction of a refresh.
+4. **Statistics**: kept for the last 30 minutes of video; percentiles, the CDF and the histogram are updated in constant time per frame
 
-2. **Duplicate Frame Detection**
-   - Compare `frame_diff` with an exponential moving average of recent differences
-   - If `frame_diff` < 25% of the moving average → repeated (dropped) frame
-   - Otherwise it is a new, unique frame
+### Performance
 
-3. **Frametime Recording**
-   - A unique frame's frametime is the number of video frames since the previous unique frame × the target frametime
-   - Kept in a rolling window covering the last 30 minutes of video
+Measured on a fast desktop (RTX 5090), 60-second clips:
 
-4. **Statistical Analysis**
-   - Real-time FPS = unique frames in the last second of video
-   - Distribution across performance buckets, percentiles and the CDF are computed from the rolling window
-   - Frame-to-frame deltas for micro-stutter detection
+| Mode | 1080p H.264 | 4K HEVC |
+|---|---|---|
+| Analysis only (`--no-display --no-video`) | ~2,750 fps | ~570 fps |
+| Annotated video, `--encoder h264_nvenc` | ~470 fps | ~360 fps |
+| Annotated video, `--encoder libx264` | ~450 fps | ~310 fps |
+| Annotated video, `--decoder opencv --encoder opencv` (no FFmpeg) | ~300 fps | ~80 fps |
 
-### Performance Notes
-
-- **CPU-intensive**: OpenCV decodes video in software, on a background thread
-- **Recommended**: i7-3770 or better for real-time H.264 @ 1080p
-- **Higher resolutions/H.265**: Requires a faster CPU for real-time playback; with `--no-display` it just takes longer
-- Statistics are updated in constant time per frame, however long the video
+How it gets there:
+- FFmpeg decodes with every CPU core and scales straight to the size needed. In analysis-only mode it outputs just the 128×72 greyscale image.
+- Encoding runs on its own thread, and through FFmpeg it can use the GPU
+- The overlay's static parts are drawn once; the histogram, CDF and text are redrawn about 10 times a second; only the scrolling graphs are drawn every frame
 
 ---
 
 ## Testing
 
-The project includes a test suite. See [TESTING.md](TESTING.md) for how to run it and what it covers.
+See [TESTING.md](TESTING.md).
 
 ---
 
 ## Limitations
 
-* The `fps` argument must match the frame rate the video was **recorded at** (the analyser warns if the file says otherwise)
-* Dropped frames must be encoded as **duplicate frames** in the video
-* Does **not account for screen tearing** - V-Sync should be enabled during recording
-* Analysis assumes the game is meant to render a new frame every refresh; repeated frames indicate performance issues
-* Scenes with no movement at all (e.g. a paused menu) can be misread, because every frame looks like a repeat
-* The histogram and CDF panels appear once more than 10 unique frames have been analysed
+* The `fps` must match the frame rate the video was **recorded at**. The analyser reads it from the file when you don't give it, and warns if they disagree.
+* Dropped frames must be encoded as **duplicate frames** in the video (true of capture cards and most recorders)
+* Without `--detect-tears`, V-Sync should be on during recording
+* Tear detection is experimental. It needs detail across the screen, and when the game renders faster than the refresh rate (more than one new frame per refresh), it can undercount new frames.
+* A frozen picture can't be told apart from a paused one, so freezes longer than `--static-after` are treated as static scenes. Raise the limit (or set it to 0) if you're measuring long hitches.
+* `--min-diff` is a fixed threshold. Very subtle motion (a character idling in a dark scene) can fall below it; lower it if new frames are being missed.
+* The histogram and CDF panels fill in once more than 10 new frames have been analysed
 
 ---
 
@@ -265,18 +289,17 @@ The project includes a test suite. See [TESTING.md](TESTING.md) for how to run i
 
 | Feature | Original | This Fork |
 |---------|----------|-----------|
-| Python Version | 2.7 | 3.11+ |
-| FPS Modes | 60fps only | Any (60, 120, 144, ...) |
+| Python Version | 2.7 | 3.11+ (or standalone .exe) |
+| FPS Modes | 60fps only | Any, read from the video |
 | Command-line Args | No | Yes |
-| Headless mode | No | Yes |
-| Video Output | No | Yes |
-| Histogram | No | Yes (5 buckets) |
-| CDF Graph | No | Yes |
-| Delta Plot | No | Yes (optional) |
+| Speed | Real time only | Up to ~45× real time |
+| Video Output | No | Yes (H.264/H.265, GPU encoders) |
+| Histogram / CDF / Delta Plot | No | Yes |
+| Stutter / Tear Detection | No | Yes |
+| Compare / Live Capture | No | Yes |
 | CSV Export | No | Summary + per-frame |
+| HTML Report | No | Yes |
 | Statistics | Basic | Average, 1% low, 0.1% low, 99th percentile |
-| Rolling Window | N/A | 30 minutes |
-| Text Visibility | Basic | Anti-aliased with borders |
 
 ---
 
@@ -296,4 +319,4 @@ The project includes a test suite. See [TESTING.md](TESTING.md) for how to run i
 
 ## Contributing
 
-Contributions are welcome! Feel free to open issues or submit pull requests with improvements. Please run the tests first; see [TESTING.md](TESTING.md).
+Contributions are welcome! Feel free to open issues or submit pull requests with improvements. Please run the linter and tests first; see [TESTING.md](TESTING.md).

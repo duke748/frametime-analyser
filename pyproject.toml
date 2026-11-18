@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "frametime-analyser"
+dynamic = ["version"]
+description = "Detect repeated frames in game footage and measure frame rate, frametimes, stutter and tearing."
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    # Bundles an FFmpeg binary: ~8x faster decoding and H.264/H.265 output.
+    # Optional at runtime: without it (and no ffmpeg on PATH) OpenCV is used.
+    "imageio-ffmpeg>=0.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.6"]
+build = ["pyinstaller>=6"]
+
+[project.scripts]
+frametime-analyser = "frametime_analyser.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/duke748/frametime-analyser"
+
+[tool.setuptools]
+packages = ["frametime_analyser"]
+
+[tool.setuptools.dynamic]
+version = { attr = "frametime_analyser.__version__" }
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["B905"]  # zip() without strict= is intentional where lengths differ
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["frametime_analyser"]

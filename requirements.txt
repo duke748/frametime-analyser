@@ -1,2 +1,4 @@
 numpy>=1.24
 opencv-python>=4.8
+# Bundles FFmpeg: much faster decoding and H.264/H.265 output. Optional.
+imageio-ffmpeg>=0.5
