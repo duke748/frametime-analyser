@@ -63,6 +63,9 @@ def export_summary_csv(path, video_path, a):
         writer.writerow(["0.1% Low FPS", f"{s['low_01_fps']:.2f}"])
         writer.writerow(["Static Scenes Excluded", s["static_scenes"]])
         writer.writerow(["Static Time Excluded (s)", f"{s['static_s']:.1f}"])
+        if a.looks_torn():
+            writer.writerow(["Warning", "V-Sync off tearing detected: FPS is overstated. "
+                                        "Re-run with --detect-tears for accurate results."])
         writer.writerow([])
 
         if a.tear_detector is not None:
@@ -216,12 +219,17 @@ def build_report_html(video_path, a, recorder, generated=None):
                         f'<th class="num">Video frame</th><th class="num">Frametime</th><th>Severity</th>'
                         f'</tr></thead><tbody>{rows}</tbody></table></div>')
 
+    warning = ""
+    if a.looks_torn():
+        warning = ('<div class="warn">This video looks like it was recorded with V-Sync off: many frames tore. '
+                   "Each torn frame was counted as a new frame, so the FPS is overstated. "
+                   "Re-run with <code>--detect-tears</code> for accurate results.</div>")
     generated = generated or datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     return REPORT_TEMPLATE.format(
         title=html.escape(title), video=html.escape(str(video_path)), fps=fps,
         duration=_fmt_time(duration), generated=generated, version=__version__,
         tiles=tiles_html, ft_chart=ft_chart, fps_chart=fps_chart, bucket_rows=bucket_rows,
-        stutters=stutter_html, window=WINDOW_MINUTES)
+        stutters=stutter_html, window=WINDOW_MINUTES, warning=warning)
 
 
 def write_report(path, video_path, a, recorder):
@@ -267,6 +275,8 @@ th {{ color:var(--muted); font-weight:500; font-size:12px; }}
 .barcell {{ width:35%; }} .bar {{ height:10px; border-radius:2px; }}
 .note {{ color:var(--muted); font-size:12px; margin-top:6px; }}
 .scroll {{ overflow-x:auto; }}
+.warn {{ margin-top:16px; padding:10px 12px; border-radius:8px; border:1px solid #d9a400;
+        background:rgba(255,196,0,.12); font-size:14px; }}
 </style>
 </head>
 <body>
@@ -274,6 +284,7 @@ th {{ color:var(--muted); font-weight:500; font-size:12px; }}
 <h1>{title}</h1>
 <div class="meta">{video} &middot; {fps} fps target &middot; {duration} analysed &middot;
 generated {generated} by Frametime Analyser {version}</div>
+{warning}
 <div class="tiles">{tiles}</div>
 <h2>Frametime</h2>
 <div class="panel">{ft_chart}</div>

@@ -66,6 +66,7 @@ class AnalysisMask:
             raise ValueError("the region left to analyse is too small; check --roi / --ignore")
         self.row_counts = np.count_nonzero(self.mask, axis=1)
         self.full = self.count == fit.width * fit.height  # Nothing excluded but letterbox bars
+        self.full_frame = self.count == w * h               # Nothing excluded at all
 
     @staticmethod
     def _to_grid(rect, fit):
@@ -107,6 +108,27 @@ def frame_difference(gray, prev_gray, mask=None, rows=False):
     return (mean, row_means) if rows else mean
 
 
+Change = namedtuple("Change", "mean peak rows")
+
+
+def frame_change(gray, prev_gray, mask=None, rows=False):
+    """How much changed between two analysis images.
+
+    mean: average difference (0-255), used for tear detection.
+    peak: 99th percentile of the lightly blurred difference. Compression noise
+          is low everywhere, while even a small real change (an NPC shifting,
+          a flickering light) makes a few strongly changed spots, so this tells
+          new frames from repeats far better than the mean in still scenes.
+    rows: per-row mean differences (NaN where masked out), if requested.
+    """
+    mean, row_means = frame_difference(gray, prev_gray, mask, rows=True) if rows else \
+        (frame_difference(gray, prev_gray, mask), None)
+    blurred = cv2.blur(cv2.absdiff(gray, prev_gray).astype(np.float32), (3, 3))
+    values = blurred[mask.mask > 0] if mask is not None and not mask.full_frame else blurred
+    peak = float(np.percentile(values, 99))
+    return Change(mean, peak, row_means)
+
+
 class TearDetector:
     """Find where new frames start within a captured frame (screen tearing).
 
@@ -122,53 +144,114 @@ class TearDetector:
 
     Rows that almost never change (a static HUD, a black sky) would look like
     the top of a tear, so they are learned and ignored.
+
+    Returns None when the changes don't have the shape tearing makes (for
+    example scattered small changes in a still scene); the caller then decides
+    with its whole-frame rule.
     """
 
-    def __init__(self, picture_rows, min_band=2, tolerance=2, static_limit=0.9):
+    def __init__(self, picture_rows, min_band=2, tolerance=2, static_limit=0.9, max_gap=2, edge_margin=2):
         self.top, self.bottom = picture_rows
         self.height = self.bottom - self.top
         self.min_band = min_band
         self.tolerance = tolerance
         self.static_limit = static_limit
+        self.max_gap = max_gap          # Unchanged runs this short inside a band are filled in
+        self.edge_margin = edge_margin  # A band this close to the top/bottom touches it
+        self.fragmented_frames = 0      # Frames that didn't look like tearing (diagnostic)
+        self.catch_ups = 0              # Frames completing the previous frame's tear: proof of tearing
         self.static_score = np.zeros(ANALYSIS_SIZE[1])
         self.prev_tears = []
         self.last_tear_rows = []
 
+    # A frame where at least this share of rows changed is a (near) full update
+    FULL_UPDATE = 0.85
+
     def detect(self, rows, threshold):
-        valid = ~np.isnan(rows) & (self.static_score < self.static_limit)
-        idx = np.flatnonzero(valid)
         self.last_tear_rows = []
+        cov_idx = np.flatnonzero(~np.isnan(rows))
+        if len(cov_idx) < 4:
+            self.prev_tears = []
+            return None
+
+        changed_all = rows[cov_idx] >= threshold
+        if len(changed_all) >= 3:  # Median filter: drop single-row blips
+            c = changed_all.astype(np.int8)
+            mid = (c[:-2] + c[1:-1] + c[2:]) >= 2
+            changed_all = np.concatenate(([changed_all[0]], mid, [changed_all[-1]]))
+        self._learn_static_rows(cov_idx, changed_all)
+
+        valid = self.static_score[cov_idx] < self.static_limit
+        idx = cov_idx[valid]
         if len(idx) < 4:
             self.prev_tears = []
-            return [0.0] if np.nanmean(rows) >= threshold else []
+            return None
+        changed = _fill_gaps(changed_all[valid], self.max_gap)
+        n = len(changed)
 
-        changed = rows[idx] >= threshold
-        if len(changed) >= 3:  # Median filter: drop single-row blips
-            c = changed.astype(np.int8)
-            mid = (c[:-2] + c[1:-1] + c[2:]) >= 2
-            changed = np.concatenate(([changed[0]], mid, [changed[-1]]))
-
-        if changed.mean() >= 0.5:
-            # A substantial update: learn which rows stay the same regardless
-            same = (~changed).astype(float)
-            self.static_score[idx] += 0.1 * (same - self.static_score[idx])
-
-        positions = []
-        tears = []
-        for s, e in _runs(changed):
-            if e - s < self.min_band and not (s == 0 and e == len(changed)):
-                continue
-            start_row, end_row = idx[s], idx[e - 1] + 1
-            if s == 0:
-                if any(abs(end_row - t) <= self.tolerance for t in self.prev_tears):
-                    continue  # Rows above last frame's tear catching up: not a new frame
-                positions.append(0.0)
+        bands = [(s, e) for s, e in _runs(changed) if e - s >= self.min_band or (s == 0 and e == n)]
+        catch_up, new_top, tear_bands = [], [], []
+        for s, e in bands:
+            touches_top = s <= self.edge_margin
+            touches_bottom = e >= n - self.edge_margin
+            end_row = idx[e - 1] + 1
+            # Rows above last frame's tear catching up: they end at (or, where the
+            # picture is flat near the tear, above) that tear line
+            if any(end_row <= t + self.tolerance and (touches_top or abs(end_row - t) <= self.tolerance)
+                   for t in self.prev_tears):
+                catch_up.append((s, e))
+                self.catch_ups += 1
+            elif touches_top:
+                new_top.append((s, e))
+            elif touches_bottom:
+                tear_bands.append((s, e))
             else:
-                positions.append((start_row - self.top) / self.height)
-                tears.append(start_row)
-        self.prev_tears = tears
-        self.last_tear_rows = tears
-        return positions
+                break  # A band touching neither edge: not the shape tearing makes
+        else:
+            if len(new_top) <= 1 and len(tear_bands) <= 1:
+                positions = [0.0] * len(new_top)
+                tears = [idx[s] for s, _e in tear_bands]
+                positions += [(row - self.top) / self.height for row in tears]
+                self.prev_tears = tears
+                self.last_tear_rows = tears
+                return positions
+
+        # Scattered changes in a mostly still scene. Fall back to the
+        # whole-frame rule (at most one new frame), and keep the last known
+        # tear line in case the next frame completes it.
+        self.fragmented_frames += 1
+        return None
+
+    def _learn_static_rows(self, cov_idx, changed):
+        """Update which rows count as static content.
+
+        A row is only evidence of static content when it stays the same while
+        the picture around it changes: inside the span of changed rows, or in a
+        near-full update. Rows above or below a tear are unchanged for a
+        different reason and teach nothing. Every covered row keeps being
+        updated, so a row wrongly marked static can recover.
+        """
+        hits = np.flatnonzero(changed)
+        if len(hits) == 0:
+            return
+        if changed.mean() >= self.FULL_UPDATE:
+            use = np.ones(len(changed), bool)
+        else:
+            use = np.zeros(len(changed), bool)
+            use[hits[0]:hits[-1] + 1] = True
+        rows = cov_idx[use]
+        same = (~changed[use]).astype(float)
+        self.static_score[rows] += 0.1 * (same - self.static_score[rows])
+
+
+def _fill_gaps(flags, max_gap):
+    """Set short runs of False that sit between True values to True."""
+    flags = flags.copy()
+    hits = np.flatnonzero(flags)
+    for a, b in zip(hits, hits[1:]):
+        if 1 < b - a <= max_gap + 1:
+            flags[a + 1:b] = True
+    return flags
 
 
 def _runs(flags):

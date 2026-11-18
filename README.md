@@ -74,7 +74,8 @@ This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](
    - Enable with `--detect-stutters`
 
 7. **Tear Detection (Optional, experimental)**
-   - For footage recorded with **V-Sync off**, where the game can swap frames mid-refresh. The analyser compares frames row by row: rows above a tear are unchanged and rows below it are new.
+   - For footage recorded with **V-Sync off**, where the game can swap frames mid-refresh. The analyser compares frames row by row: rows above a tear are unchanged and rows below it are new, and the next recorded frame catches up the rows above.
+   - Without it, each half of a torn frame counts as a new frame, so FPS is overstated (on a 36fps V-Sync-off Cyberpunk capture: 54fps without, 37.5fps with). The analyser checks for tearing even when this option is off, and warns you to re-run with it.
    - Torn frames are timed by where the tear is (a tear halfway down is half a refresh later), so frametimes stay accurate
    - Shows the percentage of torn frames and marks each tear line at the right edge of the video
    - Rows that never change (a static HUD) are learned and ignored; use `--ignore` for anything else static
@@ -82,7 +83,7 @@ This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](
 
 8. **Static Scenes**
    - If the picture doesn't change for more than 2 seconds (`--static-after`), it's treated as a static scene, such as a pause menu, and left out of the statistics instead of counting as one enormous stutter. Shorter freezes are still counted.
-   - Tiny differences below `--min-diff` (compression noise on a still picture) never count as new frames
+   - New frames are told apart from repeats by the *peak* change between frames (the 99th percentile), not the average. Compression noise is low everywhere, while even a small real change (an NPC shifting, a flickering light) makes a few strongly changed spots. Changes below `--min-diff` never count as new frames.
 
 ### Comparing Two Captures
 
@@ -137,10 +138,10 @@ By default the video plays in a window **in real time**. Press **`q`** in the wi
 | `fps` | Frame rate the video was recorded at, 1–1000. Default: read from the video, else 60 |
 | **Analysis** | |
 | `--detect-stutters` | Detect and mark frametime spikes |
-| `--detect-tears` | Detect screen tearing in V-Sync-off footage (experimental) |
+| `--detect-tears` | Detect screen tearing in V-Sync-off footage (experimental). You're warned if a video needs it |
 | `--roi X,Y,W,H` | Only analyse this region (source video pixels) |
 | `--ignore X,Y,W,H` | Ignore this region, e.g. a webcam or chat overlay. Repeatable |
-| `--min-diff N` | Smallest difference (0–255) that counts as a new frame. Default 0.1 |
+| `--min-diff N` | Smallest peak change (0–255) that counts as a new frame. Default 0.75; raise it if compression noise in still scenes is counted as new frames |
 | `--static-after SECONDS` | Repeats longer than this are a static scene, left out of the statistics. Default 2; 0 to always count them |
 | **Overlay** | |
 | `--delta-plot` | Show the frame-to-frame delta plot |
@@ -181,8 +182,8 @@ frametime-analyser stream.mp4 --ignore 1500,0,420,300
 # PC vs console, side by side
 frametime-analyser pc.mp4 --compare ps5.mp4 --labels "PC" "PS5" --title "Performance mode"
 
-# V-Sync off footage
-frametime-analyser vsync_off.mp4 144 --detect-tears
+# V-Sync off footage (e.g. a handheld PC with V-Sync off)
+frametime-analyser vsync_off.mp4 --detect-tears
 
 # Live from the first capture device at 60fps
 frametime-analyser --capture 0 --fps 60 --capture-size 1920x1080
@@ -245,7 +246,7 @@ Bad,50+,23,1.32%
 ### Key Processing Steps
 
 1. **Frame Difference**: each frame is shrunk to 128×72 greyscale (fitted the same way as the 1280×720 canvas, with letterbox bars and ignored regions masked out) and compared with the previous frame
-2. **Duplicate Detection**: a frame is a repeat if its difference is below 25% of the recent average difference, or below `--min-diff`
+2. **Duplicate Detection**: a frame is a repeat if its peak change is below 25% of the recent average, or below `--min-diff`
 3. **Frametime**: a new frame's frametime is the time since the previous new frame. With tear detection, the tear's position adds a fraction of a refresh.
 4. **Statistics**: kept for the last 30 minutes of video; percentiles, the CDF and the histogram are updated in constant time per frame
 
@@ -277,10 +278,11 @@ See [TESTING.md](TESTING.md).
 
 * The `fps` must match the frame rate the video was **recorded at**. The analyser reads it from the file when you don't give it, and warns if they disagree.
 * Dropped frames must be encoded as **duplicate frames** in the video (true of capture cards and most recorders)
-* Without `--detect-tears`, V-Sync should be on during recording
-* Tear detection is experimental. It needs detail across the screen, and when the game renders faster than the refresh rate (more than one new frame per refresh), it can undercount new frames.
+* Without `--detect-tears`, V-Sync should be on during recording (you're warned if it wasn't)
+* Tear detection is experimental. It needs detail across the screen; in nearly still scenes it falls back to whole-frame comparison. When the game renders faster than the refresh rate (more than one new frame per refresh), it can undercount new frames.
+* Very still scenes are hard: a new frame that barely differs from the last can look like a repeat with compression noise. Results there are approximate.
 * A frozen picture can't be told apart from a paused one, so freezes longer than `--static-after` are treated as static scenes. Raise the limit (or set it to 0) if you're measuring long hitches.
-* `--min-diff` is a fixed threshold. Very subtle motion (a character idling in a dark scene) can fall below it; lower it if new frames are being missed.
+* `--min-diff` is a fixed floor. Very subtle motion can fall below it (lower it if new frames are missed), and heavy compression noise can exceed it (raise it if a still picture shows a high FPS).
 * The histogram and CDF panels fill in once more than 10 new frames have been analysed
 
 ---
