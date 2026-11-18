@@ -1,7 +1,24 @@
-import cv2
+"""Helpers for the frametime analyser: video decoding, frame comparison and statistics.
 
-def ResizeWithAspectRatio(image, width=None, height=None, inter=cv2.INTER_AREA):
-    dim = None
+Everything here is independent of the on-screen overlay, so it can be unit tested.
+"""
+import math
+import time
+from bisect import bisect_right
+from collections import Counter, deque
+from queue import Empty, Queue
+from threading import Thread
+
+import cv2
+import numpy as np
+
+# Every frame is fitted onto a canvas of this size before analysis, so the
+# overlay (drawn at fixed positions) always lines up whatever the source size.
+CANVAS_SIZE = (1280, 720)
+
+
+def ResizeWithAspectRatio(image, width=None, height=None, inter=cv2.INTER_LINEAR):
+    """Resize to the given width or height, keeping the aspect ratio."""
     (h, w) = image.shape[:2]
     if width is None and height is None:
         return image
@@ -11,140 +28,171 @@ def ResizeWithAspectRatio(image, width=None, height=None, inter=cv2.INTER_AREA):
     else:
         r = width / float(w)
         dim = (width, int(h * r))
-    # return cv2.resize(image, dim, interpolation=cv2.INTER_NEAREST)
-    return cv2.resize(image, dim, interpolation=cv2.INTER_LINEAR)    
+    return cv2.resize(image, dim, interpolation=inter)
 
 
+def fit_to_canvas(image, width=CANVAS_SIZE[0], height=CANVAS_SIZE[1]):
+    """Scale an image to fit inside width x height, keeping its aspect ratio,
+    and centre it on a black canvas of exactly that size (letterbox/pillarbox)."""
+    (h, w) = image.shape[:2]
+    if (w, h) == (width, height):
+        return image
+    scale = min(width / w, height / h)
+    new_w = max(1, min(width, round(w * scale)))
+    new_h = max(1, min(height, round(h * scale)))
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    canvas = np.zeros((height, width) + image.shape[2:], dtype=image.dtype)
+    x = (width - new_w) // 2
+    y = (height - new_h) // 2
+    canvas[y:y + new_h, x:x + new_w] = resized
+    return canvas
 
-from threading import Thread
-import sys
-# import cv2
-import time
 
-# import the Queue class from Python 3
-if sys.version_info >= (3, 0):
-    from queue import Queue
+def frame_difference(frame, prev_frame, scale=0.1):
+    """Mean absolute greyscale difference between two frames.
 
-# otherwise, import the Queue class for Python 2.7
-else:
-    from Queue import Queue
+    Frames are downscaled first, which is much faster and ignores
+    compression noise. A repeated frame gives a value close to zero.
+    """
+    small = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
+    small_prev = cv2.resize(prev_frame, (0, 0), fx=scale, fy=scale)
+    small = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    small_prev = cv2.cvtColor(small_prev, cv2.COLOR_BGR2GRAY)
+    return float(cv2.absdiff(small, small_prev).mean())
 
 
-#multithread video decode and downscale to 720p
-class FileVideoStream: 
-    # def __init__(self, path, transform=None, queue_size=128):
-    def __init__(self, path, transform=None, queue_size=196):
-        # initialize the file video stream along with the boolean
-        # used to indicate if the thread should be stopped or not
+class FileVideoStream:
+    """Decode a video on a background thread and hand frames to the caller.
+
+    Each frame is passed through `transform` (if given) and then fitted onto
+    a `size` canvas (see fit_to_canvas) on the decoding thread.
+    """
+
+    def __init__(self, path, transform=None, queue_size=196, size=CANVAS_SIZE):
         self.stream = cv2.VideoCapture(path)
-        # self.stream = cv2.VideoCapture(path, cv2.CAP_MSMF)
-
         self.stopped = False
         self.transform = transform
-
-        # initialize the queue used to store frames read from
-        # the video file
+        self.size = size
         self.Q = Queue(maxsize=queue_size)
-        # intialize thread
         self.thread = Thread(target=self.update, args=())
         self.thread.daemon = True
 
+    def is_opened(self):
+        return self.stream.isOpened()
+
+    def fps(self):
+        """Frame rate reported by the container (0 if unknown)."""
+        return self.stream.get(cv2.CAP_PROP_FPS) or 0
+
+    def frame_count(self):
+        """Number of frames reported by the container (0 if unknown)."""
+        return int(self.stream.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
     def start(self):
-        # start a thread to read frames from the file video stream
         self.thread.start()
         return self
 
     def update(self):
-        # keep looping infinitely
-        while True:
-            # if the thread indicator variable is set, stop the
-            # thread
-            if self.stopped:
-                break
+        while not self.stopped:
+            if self.Q.full():
+                time.sleep(0.01)  # Queue is full: rest for 10ms
+                continue
 
-            # otherwise, ensure the queue has room in it
-            if not self.Q.full():
-                # read the next frame from the file
-                (grabbed, frame) = self.stream.read()
+            grabbed, frame = self.stream.read()
+            if not grabbed:
+                break  # End of the video
 
-                # if the `grabbed` boolean is `False`, then we have
-                # reached the end of the video file
-                if not grabbed:
-                    self.stopped = True
-                    
-                # if there are transforms to be done, might as well
-                # do them on producer thread before handing back to
-                # consumer thread. ie. Usually the producer is so far
-                # ahead of consumer that we have time to spare.
-                #
-                # Python is not parallel but the transform operations
-                # are usually OpenCV native so release the GIL.
-                #
-                # Really just trying to avoid spinning up additional
-                # native threads and overheads of additional
-                # producer/consumer queues since this one was generally
-                # idle grabbing frames.
-                if self.transform:
-                    frame = self.transform(frame)
-
-                if frame is not None:
-                    frame = ResizeWithAspectRatio(frame, width=1280) #slow function, about 2.5ms
-                    # add the frame to the queue
-                    self.Q.put(frame)
-            else:
-                time.sleep(0.1)  # Rest for 10ms, we have a full queue
+            if self.transform:
+                frame = self.transform(frame)
+            if self.size:
+                frame = fit_to_canvas(frame, *self.size)
+            # Only this thread puts, and only when the queue has room,
+            # so this never blocks.
+            self.Q.put(frame)
 
         self.stream.release()
+        # Set after the last put, so a reader that sees `stopped` and an
+        # empty queue knows no more frames are coming.
+        self.stopped = True
 
     def read(self):
-        # return next frame in the queue
-        return self.Q.get()
+        """Return the next frame, or None once the video has ended."""
+        while True:
+            try:
+                return self.Q.get(timeout=0.1)
+            except Empty:
+                if self.stopped and self.Q.empty():
+                    return None
 
-    # Insufficient to have consumer use while(more()) which does
-    # not take into account if the producer has reached end of
-    # file stream.
     def running(self):
+        """True while frames are queued or still being decoded."""
         return self.more() or not self.stopped
 
     def more(self):
-        # return True if there are still frames in the queue. If stream is not stopped, try to wait a moment
+        """True if a frame is queued. Waits briefly if decoding is still in progress."""
         tries = 0
         while self.Q.qsize() == 0 and not self.stopped and tries < 5:
             time.sleep(0.1)
             tries += 1
-
         return self.Q.qsize() > 0
 
     def stop(self):
-        # indicate that the thread should be stopped
         self.stopped = True
-        # wait until stream resources are released (producer thread might be still grabbing frame)
-        self.thread.join()    
+        if self.thread.is_alive():
+            self.thread.join()
+
+
+# --- Histogram buckets -------------------------------------------------------
+
+GREEN = (93, 232, 130)
+YELLOW = (0, 255, 255)
+ORANGE = (0, 165, 255)
+RED = (0, 0, 255)
 
 # Frametime histogram buckets per target FPS: (min_ms, max_ms, label, BGR colour).
-# A frametime falls in a bucket when min_ms <= frametime < max_ms.
+# A frametime falls in a bucket when min_ms <= frametime < max_ms. The last
+# bucket is open-ended so long freezes are still counted.
 # Ranges are chosen so the ideal frametime (16.67ms / 8.33ms) lands in "Perfect".
 HISTOGRAM_BUCKETS = {
     60: [
-        (0, 18, "Perfect", (93, 232, 130)),      # Green - includes ideal 16.67ms
-        (18, 25, "Good", (93, 232, 130)),        # Green - still smooth
-        (25, 35, "Fair", (0, 255, 255)),         # Yellow - noticeable
-        (35, 50, "Stutter", (0, 165, 255)),      # Orange - severe
-        (50, 999, "Bad", (0, 0, 255)),           # Red - critical
+        (0, 18, "Perfect", GREEN),       # includes ideal 16.67ms
+        (18, 25, "Good", GREEN),         # still smooth
+        (25, 35, "Fair", YELLOW),        # noticeable
+        (35, 50, "Stutter", ORANGE),     # severe
+        (50, math.inf, "Bad", RED),      # critical
     ],
     120: [
-        (0, 9, "Perfect", (93, 232, 130)),       # Green - includes ideal 8.33ms
-        (9, 12, "Good", (93, 232, 130)),         # Green - still smooth
-        (12, 17, "Fair", (0, 255, 255)),         # Yellow - noticeable
-        (17, 25, "Stutter", (0, 165, 255)),      # Orange - severe
-        (25, 999, "Bad", (0, 0, 255)),           # Red - critical
+        (0, 9, "Perfect", GREEN),        # includes ideal 8.33ms
+        (9, 12, "Good", GREEN),
+        (12, 17, "Fair", YELLOW),
+        (17, 25, "Stutter", ORANGE),
+        (25, math.inf, "Bad", RED),
     ],
 }
 
+# For other target FPS values, bucket edges are these multiples of the target
+# frametime. They reproduce the 60fps table exactly.
+BUCKET_MULTIPLIERS = (1.08, 1.5, 2.1, 3.0)
+
 
 def get_histogram_buckets(target_fps):
-    """Return the histogram bucket definitions for a target FPS (60 or 120)."""
-    return HISTOGRAM_BUCKETS[target_fps]
+    """Return the histogram bucket definitions for a target FPS."""
+    if target_fps in HISTOGRAM_BUCKETS:
+        return HISTOGRAM_BUCKETS[target_fps]
+    if target_fps <= 0:
+        raise ValueError("target_fps must be positive")
+    target_frametime = 1000.0 / target_fps
+    edges = [0] + [round(target_frametime * m, 1) for m in BUCKET_MULTIPLIERS] + [math.inf]
+    labels = [b[2] for b in HISTOGRAM_BUCKETS[60]]
+    colors = [b[3] for b in HISTOGRAM_BUCKETS[60]]
+    return [(edges[i], edges[i + 1], labels[i], colors[i]) for i in range(len(labels))]
+
+
+def format_bucket_range(min_ms, max_ms):
+    """Human-readable bucket range, e.g. '18-25' or '50+'."""
+    if math.isinf(max_ms):
+        return f"{min_ms:g}+"
+    return f"{min_ms:g}-{max_ms:g}"
 
 
 def categorize_frametime(frametime_ms, buckets):
@@ -165,6 +213,20 @@ def count_frames_per_bucket(frametimes, buckets):
     return counts
 
 
+def fps_color(avg_fps, target_fps):
+    """Colour for an average FPS: green near target, then yellow, orange, red."""
+    ratio = avg_fps / target_fps if target_fps else 0
+    if ratio >= 0.96:
+        return GREEN
+    if ratio >= 5 / 6:
+        return YELLOW
+    if ratio >= 2 / 3:
+        return ORANGE
+    return RED
+
+
+# --- Statistics --------------------------------------------------------------
+
 class FpsCounter:
     """Rolling one-second window of frame flags (1 = unique frame, 0 = repeated frame).
 
@@ -173,10 +235,95 @@ class FpsCounter:
     """
 
     def __init__(self, target_fps):
-        self.window = [0] * target_fps
+        self.window = deque([0] * target_fps, maxlen=target_fps)
+        self.fps = 0
 
     def record(self, unique):
         """Record one video frame and return the updated FPS."""
-        self.window.pop(0)
-        self.window.append(1 if unique else 0)
-        return sum(self.window)
+        value = 1 if unique else 0
+        self.fps += value - self.window[0]
+        self.window.append(value)
+        return self.fps
+
+
+class FrametimeWindow:
+    """Frametimes covering the most recent `max_duration_ms` of video.
+
+    Frametimes are whole multiples of the target frametime, so there are only
+    a handful of distinct values. Keeping a count per value makes the mean,
+    percentiles, CDF and bucket counts cheap however long the window is.
+    """
+
+    def __init__(self, max_duration_ms):
+        self.max_duration_ms = max_duration_ms
+        self.values = deque()
+        self.counts = Counter()
+        self.total_ms = 0.0
+
+    def __len__(self):
+        return len(self.values)
+
+    def add(self, frametime_ms):
+        self.values.append(frametime_ms)
+        self.counts[frametime_ms] += 1
+        self.total_ms += frametime_ms
+        # Drop the oldest frames once the window holds more than its duration
+        while self.total_ms > self.max_duration_ms and len(self.values) > 1:
+            old = self.values.popleft()
+            self.total_ms -= old
+            self.counts[old] -= 1
+            if self.counts[old] == 0:
+                del self.counts[old]
+
+    def mean(self):
+        return self.total_ms / len(self.values) if self.values else 0.0
+
+    def average_fps(self):
+        """Unique frames per second of video covered by the window."""
+        return 1000.0 * len(self.values) / self.total_ms if self.total_ms > 0 else 0.0
+
+    def _cumulative(self):
+        keys = sorted(self.counts)
+        running = 0
+        cumulative = []
+        for k in keys:
+            running += self.counts[k]
+            cumulative.append(running)
+        return keys, cumulative
+
+    def percentile(self, p):
+        """Nearest-rank percentile (0-100) of the frametimes, or 0 if empty."""
+        n = len(self.values)
+        if n == 0:
+            return 0.0
+        rank = max(1, math.ceil(p / 100.0 * n))
+        keys, cumulative = self._cumulative()
+        for k, c in zip(keys, cumulative):
+            if c >= rank:
+                return k
+        return keys[-1]
+
+    def low_fps(self, percent):
+        """'1% low'-style FPS: 1000 / the (100 - percent)th percentile frametime."""
+        ft = self.percentile(100 - percent)
+        return 1000.0 / ft if ft > 0 else 0.0
+
+    def cdf(self, thresholds):
+        """Percentage of frametimes <= each threshold."""
+        n = len(self.values)
+        if n == 0:
+            return [0.0 for _ in thresholds]
+        keys, cumulative = self._cumulative()
+        result = []
+        for t in thresholds:
+            i = bisect_right(keys, t)
+            result.append(100.0 * (cumulative[i - 1] if i else 0) / n)
+        return result
+
+    def bucket_counts(self, buckets):
+        counts = [0] * len(buckets)
+        for value, c in self.counts.items():
+            i = categorize_frametime(value, buckets)
+            if i is not None:
+                counts[i] += c
+        return counts

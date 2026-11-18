@@ -1,7 +1,10 @@
 """Unit tests for libraries module"""
+import math
+import shutil
 import unittest
 import sys
 import os
+import tempfile
 import numpy as np
 import cv2
 
@@ -15,6 +18,13 @@ from libraries import (
     categorize_frametime,
     count_frames_per_bucket,
     FpsCounter,
+    FrametimeWindow,
+    BUCKET_MULTIPLIERS,
+    fit_to_canvas,
+    format_bucket_range,
+    fps_color,
+    frame_difference,
+    GREEN, YELLOW, ORANGE, RED,
 )
 
 
@@ -133,7 +143,7 @@ class TestHistogramBuckets(unittest.TestCase):
             (18, 25, "Good"),
             (25, 35, "Fair"),
             (35, 50, "Stutter"),
-            (50, 999, "Bad"),
+            (50, math.inf, "Bad"),
         ])
 
     def test_120fps_histogram_buckets(self):
@@ -143,7 +153,7 @@ class TestHistogramBuckets(unittest.TestCase):
             (9, 12, "Good"),
             (12, 17, "Fair"),
             (17, 25, "Stutter"),
-            (25, 999, "Bad"),
+            (25, math.inf, "Bad"),
         ])
 
     def test_buckets_are_contiguous(self):
@@ -170,22 +180,58 @@ class TestHistogramBuckets(unittest.TestCase):
         for ft, expected in cases.items():
             self.assertEqual(buckets[categorize_frametime(ft, buckets)][2], expected, ft)
 
-    def test_frametime_outside_buckets(self):
-        """Frametimes outside every bucket are not categorised"""
+    def test_long_freezes_are_counted(self):
+        """The last bucket is open-ended, so multi-second freezes are still counted"""
         buckets = get_histogram_buckets(60)
-        self.assertIsNone(categorize_frametime(999, buckets))
+        self.assertEqual(buckets[categorize_frametime(999, buckets)][2], "Bad")
+        self.assertEqual(buckets[categorize_frametime(5000, buckets)][2], "Bad")
         self.assertIsNone(categorize_frametime(-1, buckets))
 
     def test_count_frames_per_bucket(self):
-        """Frametimes are counted into the right buckets"""
+        """Frametimes are counted into the right buckets, including a 1.5s freeze"""
         buckets = get_histogram_buckets(60)
         frametimes = [16.67, 16.67, 20.0, 33.33, 40.0, 66.67, 1500.0]
-        self.assertEqual(count_frames_per_bucket(frametimes, buckets), [2, 1, 1, 1, 1])
+        self.assertEqual(count_frames_per_bucket(frametimes, buckets), [2, 1, 1, 1, 2])
+
+    def test_other_target_fps_buckets(self):
+        """Other target FPS values get buckets scaled from the target frametime"""
+        for target_fps in (30, 50, 90, 144, 240):
+            buckets = get_histogram_buckets(target_fps)
+            self.assertEqual(len(buckets), 5)
+            self.assertEqual(buckets[0][0], 0)
+            self.assertTrue(math.isinf(buckets[-1][1]))
+            for prev, nxt in zip(buckets, buckets[1:]):
+                self.assertEqual(prev[1], nxt[0])
+                self.assertLess(prev[0], prev[1])
+            i = categorize_frametime(1000.0 / target_fps, buckets)
+            self.assertEqual(buckets[i][2], "Perfect", target_fps)
+
+    def test_derived_buckets_match_60fps_table(self):
+        """The scaling rule reproduces the hand-written 60fps edges"""
+        edges = [round(1000.0 / 60 * m, 1) for m in BUCKET_MULTIPLIERS]
+        self.assertEqual(edges, [18, 25, 35, 50])
 
     def test_invalid_target_fps(self):
-        """Only 60 and 120 have bucket definitions"""
-        with self.assertRaises(KeyError):
-            get_histogram_buckets(90)
+        """A target FPS of zero or less has no buckets"""
+        with self.assertRaises(ValueError):
+            get_histogram_buckets(0)
+
+    def test_format_bucket_range(self):
+        """Bucket ranges are formatted for the overlay and CSV"""
+        self.assertEqual(format_bucket_range(18, 25), "18-25")
+        self.assertEqual(format_bucket_range(4.5, 6.2), "4.5-6.2")
+        self.assertEqual(format_bucket_range(50, math.inf), "50+")
+
+
+class TestFpsColor(unittest.TestCase):
+    """Average FPS colour thresholds scale with the target FPS"""
+
+    def test_thresholds(self):
+        cases = [(60, 60, GREEN), (58, 60, GREEN), (55, 60, YELLOW), (45, 60, ORANGE),
+                 (30, 60, RED), (120, 120, GREEN), (100, 120, YELLOW), (90, 120, ORANGE),
+                 (60, 120, RED), (144, 144, GREEN)]
+        for avg, target, expected in cases:
+            self.assertEqual(fps_color(avg, target), expected, (avg, target))
 
 
 class TestFpsCounter(unittest.TestCase):
@@ -250,8 +296,145 @@ class TestImageProcessing(unittest.TestCase):
         frame = np.ones((100, 100), dtype=np.uint8) * 128
         
         diff = cv2.absdiff(frame, frame)
-        
+
         self.assertEqual(diff.mean(), 0)
+
+
+class TestFrametimeWindow(unittest.TestCase):
+    """Test cases for the rolling frametime statistics window"""
+
+    def test_empty_window(self):
+        w = FrametimeWindow(1000)
+        self.assertEqual(len(w), 0)
+        self.assertEqual(w.mean(), 0)
+        self.assertEqual(w.average_fps(), 0)
+        self.assertEqual(w.percentile(99), 0)
+        self.assertEqual(w.low_fps(1), 0)
+        self.assertEqual(w.cdf([10, 20]), [0, 0])
+
+    def test_mean_and_average_fps(self):
+        w = FrametimeWindow(60_000)
+        for ft in [16.67, 16.67, 16.67, 33.34, 16.67]:
+            w.add(ft)
+        self.assertAlmostEqual(w.mean(), 20.004, places=3)
+        self.assertAlmostEqual(w.average_fps(), 1000 / 20.004, places=2)
+
+    def test_window_keeps_only_recent_duration(self):
+        """Frames older than the window duration are dropped"""
+        w = FrametimeWindow(100)
+        for _ in range(10):
+            w.add(10.0)
+        self.assertEqual(len(w), 10)
+        w.add(50.0)
+        self.assertEqual(len(w), 6)  # 5 x 10ms + 50ms
+        self.assertAlmostEqual(w.total_ms, 100)
+        self.assertEqual(w.bucket_counts([(0, 20, "a", None), (20, math.inf, "b", None)]), [5, 1])
+
+    def test_single_long_frame_is_kept(self):
+        """A frame longer than the whole window still counts"""
+        w = FrametimeWindow(100)
+        w.add(500.0)
+        self.assertEqual(len(w), 1)
+
+    def test_thirty_minute_window_at_60fps(self):
+        """A 30 minute window holds 30 minutes of smooth 60fps frames"""
+        w = FrametimeWindow(30 * 60 * 1000)
+        ft = 1000.0 / 60
+        for _ in range(60 * 60 * 31):
+            w.add(ft)
+        self.assertAlmostEqual(len(w), 60 * 60 * 30, delta=1)
+
+    def test_percentiles_and_lows(self):
+        w = FrametimeWindow(10**9)
+        for _ in range(98):
+            w.add(10.0)
+        w.add(20.0)
+        w.add(50.0)
+        self.assertEqual(w.percentile(50), 10.0)
+        self.assertEqual(w.percentile(99), 20.0)
+        self.assertEqual(w.percentile(100), 50.0)
+        self.assertAlmostEqual(w.low_fps(1), 50.0)
+        self.assertAlmostEqual(w.low_fps(0.1), 20.0)
+
+    def test_cdf(self):
+        w = FrametimeWindow(10**9)
+        for ft in [10, 10, 20, 40]:
+            w.add(ft)
+        self.assertEqual(w.cdf([0, 10, 15, 20, 39, 40, 100]), [0, 50, 50, 75, 75, 100, 100])
+
+    def test_bucket_counts_match_count_frames_per_bucket(self):
+        buckets = get_histogram_buckets(60)
+        frametimes = [16.67, 16.67, 20.0, 33.33, 40.0, 66.67, 1500.0]
+        w = FrametimeWindow(10**9)
+        for ft in frametimes:
+            w.add(ft)
+        self.assertEqual(w.bucket_counts(buckets), count_frames_per_bucket(frametimes, buckets))
+
+
+class TestFitToCanvas(unittest.TestCase):
+    """Frames of any shape are fitted onto the fixed overlay canvas"""
+
+    def test_sizes(self):
+        for h, w in [(1080, 1920), (720, 1280), (1440, 3440), (1080, 1440), (1920, 1080), (100, 100)]:
+            out = fit_to_canvas(np.full((h, w, 3), 200, np.uint8), 1280, 720)
+            self.assertEqual(out.shape, (720, 1280, 3), (h, w))
+
+    def test_ultrawide_is_letterboxed(self):
+        out = fit_to_canvas(np.full((1440, 3440, 3), 200, np.uint8), 1280, 720)
+        self.assertEqual(out[0, 640, 0], 0)      # black bar at the top
+        self.assertEqual(out[360, 640, 0], 200)  # picture in the middle
+
+    def test_4_3_is_pillarboxed(self):
+        out = fit_to_canvas(np.full((1080, 1440, 3), 200, np.uint8), 1280, 720)
+        self.assertEqual(out[360, 0, 0], 0)
+        self.assertEqual(out[360, 640, 0], 200)
+
+    def test_canvas_size_is_unchanged(self):
+        img = np.zeros((720, 1280, 3), np.uint8)
+        self.assertIs(fit_to_canvas(img, 1280, 720), img)
+
+
+class TestFrameDifference(unittest.TestCase):
+    """Test cases for the downscaled greyscale frame difference"""
+
+    def test_identical_frames(self):
+        frame = np.full((720, 1280, 3), 90, np.uint8)
+        self.assertEqual(frame_difference(frame, frame.copy()), 0)
+
+    def test_different_frames(self):
+        a = np.full((720, 1280, 3), 100, np.uint8)
+        b = np.full((720, 1280, 3), 110, np.uint8)
+        self.assertAlmostEqual(frame_difference(a, b), 10, places=0)
+
+
+class TestFileVideoStreamReading(unittest.TestCase):
+    """Reading a real (generated) video through the background thread"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir)
+
+    def test_reads_all_frames_then_none(self):
+        path = os.path.join(self.temp_dir, "clip.mp4")
+        out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 60.0, (320, 240))
+        for i in range(30):
+            out.write(np.full((240, 320, 3), i * 5, np.uint8))
+        out.release()
+
+        # A small queue makes the decoder wait for the reader
+        fvs = FileVideoStream(path, queue_size=4).start()
+        frames = []
+        while True:
+            frame = fvs.read()
+            if frame is None:
+                break
+            frames.append(frame)
+        fvs.stop()
+        self.assertEqual(len(frames), 30)
+        self.assertEqual(frames[0].shape, (720, 1280, 3))
+        self.assertFalse(fvs.thread.is_alive())
 
 
 if __name__ == '__main__':

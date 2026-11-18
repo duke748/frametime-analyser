@@ -1,25 +1,28 @@
 # Frametime Analyser (Enhanced Fork)
 
-**Frametime Analyser** is an advanced tool that detects duplicate frames in game footage to calculate FPS, frame times, and performance metrics. This enhanced version provides comprehensive visual analysis with multiple graphs, statistics, and export capabilities.
+**Frametime Analyser** detects repeated frames in game footage to work out FPS, frametimes and stutter. It plays the video back with performance graphs overlaid, saves an annotated copy, and exports the results to CSV.
+
+![Frametime Analyser overlay on Red Dead Redemption 2 footage](Media/RDR2.gif)
+
+*Output from the original version of the tool. This fork adds the delta, smoothness (CDF) and histogram panels described below.*
 
 ## About This Fork
 
-This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](https://github.com/AndrewKeYanzhe/frametime-analyser). The original tool was inspired by Digital Foundry's FPSGui tool:
+This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](https://github.com/AndrewKeYanzhe/frametime-analyser). The original tool was inspired by Digital Foundry's FPSGui tool.
 
-### Major Enhancements Added:
+### Major Enhancements Added
 
 - **Python 3 compatibility** (upgraded from Python 2.7)
-- **60fps and 120fps mode support** with dynamic scaling
+- **Any target frame rate** (60, 120, 144, 240, ...) with dynamic scaling
 - **Video output** with embedded analysis overlays
-- **Command-line argument parsing** for flexible usage
+- **Command-line options** with `--help`
+- **Headless mode** (`--no-display`) that analyses as fast as the CPU allows
 - **Real-time graphs**: Frametime, FPS, and optional Frame Delta plot
 - **Frametime Distribution Histogram** with color-coded performance buckets
 - **Cumulative Distribution Function (CDF)** smoothness graph
-- **Average statistics** for frametime and FPS over 30-minute rolling window
-- **CSV export** of histogram data and performance metrics
-- **Anti-aliased text** with black borders for improved readability
+- **Average FPS, 1% low and 0.1% low FPS** over the last 30 minutes of video
+- **CSV export** of summary statistics and of every frame's frametime
 - **Micro-stutter detection** via Frame-to-Frame Delta analysis
-- **Extended histogram buffer** (30 minutes of data)
 - **Stutter detection** for shader compilation and traversal stutters
 
 ---
@@ -28,19 +31,19 @@ This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](
 
 ### Real-Time Visual Analysis
 
-1. **Frametime Graph (Left)**
-   - Shows absolute frametime in milliseconds for each unique frame
-   - Scale: 0 to 2.5× target frametime (e.g., 0-41.7ms for 60fps)
+1. **Frametime Graph**
+   - Shows the frametime in milliseconds of each unique frame
+   - Scale: 0 to 2.5× target frametime (e.g. 0–41.7ms at 60fps), with a grey reference line at the target frametime
    - Helps identify individual frame drops and stutter events
 
 2. **Frame-to-Frame Delta Plot (Optional)**
-   - Detects micro-stutter by plotting the absolute difference between consecutive frame times
+   - Detects micro-stutter by plotting the absolute difference between consecutive frametimes
    - Color-coded: Green (smooth) → Yellow (noticeable) → Red (micro-stutter)
    - Reveals frame pacing issues invisible in FPS averages
-   - Enable with `-delta-plot` flag
+   - Enable with `--delta-plot`
 
 3. **Cumulative Distribution Function / Smoothness Graph**
-   - **What it shows**: The percentage of frames rendered faster than a given frametime
+   - **What it shows**: The percentage of frames rendered at or faster than a given frametime
    - **X-axis**: Frametime in milliseconds (0 to 3× target frametime)
    - **Y-axis**: Cumulative percentage (0-100%)
    - **Interpretation**:
@@ -53,20 +56,22 @@ This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](
    - This is the same metric used by CapFrameX's "Smoothness Graph"
 
 4. **FPS Graph (Bottom)**
-   - Real-time FPS tracking over time
-   - Shows 120/60/30/0 scale markers
-   - Reference lines at key FPS values for easy reading
+   - FPS over the last ~10 seconds of video
+   - Scaled from 0 to the target FPS, with reference lines at 30, 60, 120 and 240 where they fit
 
 5. **Frametime Distribution Histogram**
    - Shows percentage distribution across 5 performance buckets:
-     - **Perfect**: 0-18ms (60fps) or 0-9ms (120fps) - Green
-     - **Good**: 18-25ms (60fps) or 9-12ms (120fps) - Green
-     - **Fair**: 25-35ms (60fps) or 12-17ms (120fps) - Yellow
-     - **Stutter**: 35-50ms (60fps) or 17-25ms (120fps) - Orange
-     - **Bad**: 50ms+ (60fps) or 25ms+ (120fps) - Red
+
+     | Bucket | 60fps | 120fps | Other targets (× target frametime) | Color |
+     |---|---|---|---|---|
+     | **Perfect** | 0–18ms | 0–9ms | 0–1.08× | Green |
+     | **Good** | 18–25ms | 9–12ms | 1.08–1.5× | Green |
+     | **Fair** | 25–35ms | 12–17ms | 1.5–2.1× | Yellow |
+     | **Stutter** | 35–50ms | 17–25ms | 2.1–3× | Orange |
+     | **Bad** | 50ms+ | 25ms+ | 3×+ | Red |
+
    - Displays both bar graph and percentage table
-   - Shows frametime range thresholds for each bucket
-   - Includes average frametime and average FPS indicators
+   - Shows average frametime, average FPS and 1% low FPS above the graph
 
 6. **Stutter Detection (Optional)**
    - Automatically detects and highlights severe frametime spikes
@@ -74,25 +79,14 @@ This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](
      - **Moderate Stutters**: 2.5× target frametime (≥41.7ms @ 60fps, ≥20.8ms @ 120fps) - Orange markers
      - **Severe Stutters**: 4× target frametime (≥66.7ms @ 60fps, ≥33.3ms @ 120fps) - Red markers
    - Visual indicators:
-     - Vertical lines on frametime graph at stutter locations
-     - Real-time counter showing total/severe/moderate stutter count
+     - Vertical lines on the frametime graph at the stuttering frames
+     - Counter showing total/severe/moderate stutter count
    - Useful for detecting:
      - Shader compilation stutters (first-time asset loading)
      - Traversal stutters (moving to new game areas)
      - Texture streaming issues
-   - Statistics exported to CSV including average and worst-case stutter severity
-   - Enable with `-detect-stutters` flag
-
-### Data Export
-
-- **CSV Export**: Automatically generates `[filename]_histogram.csv` containing:
-  - Video metadata (file path, target FPS)
-  - Average frametime and FPS over analysis window
-  - Total unique frames analyzed
-  - Analysis duration
-  - Percentage distribution across all performance buckets
-
-- **Video Export**: Generates `[filename]_analyzed.mp4` with all overlays embedded
+   - Statistics exported to CSV, including average and worst-case stutter severity
+   - Enable with `--detect-stutters`
 
 ---
 
@@ -100,10 +94,9 @@ This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](
 
 ### Prerequisites
 
-* **Python 3.x** (tested with Python 3.13+)
+* **Python 3.11+**
 * **OpenCV** (`opencv-python`)
 * **NumPy**
-* **CSV module** (built-in)
 
 ### Installation
 
@@ -128,108 +121,94 @@ pip install -r requirements.txt
 ### Basic Command
 
 ```bash
-python "Frametime Analyser.py" <video_file> [fps] [options]
+python frametime_analyser.py <video_file> [fps] [options]
 ```
+
+`python "Frametime Analyser.py" ...` still works too.
+
+By default the video plays in a window **in real time**, so a 10-minute capture takes 10 minutes. Press **`q`** in the window to stop early; results up to that point are still saved. Use `--no-display` to skip the window and analyse as fast as possible.
 
 ### Arguments
 
-| Argument | Type | Required | Default | Description |
-|----------|------|----------|---------|-------------|
-| `video_file` | string | Yes | - | Path to the video file to analyze |
-| `fps` | integer | No | 60 | Target FPS mode: `60` or `120` |
-| `-delta-plot` | flag | No | disabled | Enable Frame-to-Frame Delta plot for micro-stutter detection |
-| `-watermark <file>` | flag + path | No | disabled | Add a 32x32 watermark image to bottom left corner (50% opacity) |
-| `-title <text>` | flag + string | No | disabled | Add a centered title at the top of the screen with opaque background |
-| `-detect-stutters` | flag | No | disabled | Detect and highlight severe frametime spikes (shader/traversal stutters) |
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `video_file` | Yes | - | Path to the video file to analyse |
+| `fps` | No | 60 | Frame rate the video was recorded at (1–1000), e.g. `60`, `120`, `144` |
+| `--delta-plot` | No | off | Show the Frame-to-Frame Delta plot for micro-stutter detection |
+| `--detect-stutters` | No | off | Detect and highlight severe frametime spikes (shader/traversal stutters) |
+| `--watermark <file>` | No | off | Add a 32×32 watermark image to the bottom left corner (50% opacity) |
+| `--title <text>` | No | off | Add a centered title at the top of the screen with an opaque background |
+| `--no-display` | No | off | No preview window and no real-time playback; prints progress instead |
+| `--help` | No | - | Show all options |
+
+The single-dash spellings from earlier versions (`-delta-plot`, `-detect-stutters`, `-watermark`, `-title`) still work. Options and the `fps` value can be given in any order.
 
 ### Examples
 
-#### 1. Basic analysis at 60fps (default)
 ```bash
-python "Frametime Analyser.py" "gameplay.mp4"
-```
+# Basic analysis at 60fps (default)
+python frametime_analyser.py gameplay.mp4
 
-#### 2. Analyze 120fps video
-```bash
-python "Frametime Analyser.py" "gameplay.mp4" 120
-```
+# Analyse a 120fps or 144fps capture
+python frametime_analyser.py gameplay.mp4 120
+python frametime_analyser.py gameplay.mp4 144
 
-#### 3. Enable micro-stutter detection (delta plot)
-```bash
-python "Frametime Analyser.py" "gameplay.mp4" 60 -delta-plot
-```
+# Micro-stutter (delta plot) and stutter detection
+python frametime_analyser.py gameplay.mp4 --delta-plot --detect-stutters
 
-#### 4. 120fps with delta plot (arguments can be in any order)
-```bash
-python "Frametime Analyser.py" "gameplay.mp4" -delta-plot 120
-```
+# Add a watermark and title
+python frametime_analyser.py gameplay.mp4 --watermark logo.png --title "Cyberpunk 2077 - Ultra Settings"
 
-#### 5. Add watermark
-```bash
-python "Frametime Analyser.py" "gameplay.mp4" -watermark "./bh.jpg"
-```
-
-#### 6. All options combined
-```bash
-python "Frametime Analyser.py" "gameplay.mp4" 120 -delta-plot -watermark "./logo.png"
-```
-
-#### 7. Add title
-```bash
-python "Frametime Analyser.py" "gameplay.mp4" -title "Cyberpunk 2077 - Ultra Settings"
-```
-
-#### 8. Complete example with all options
-```bash
-python "Frametime Analyser.py" "gameplay.mp4" 120 -delta-plot -watermark "./logo.png" -title "Game Performance Test"
-```
-
-#### 9. Detect severe stutters (shader compilation, traversal)
-```bash
-python "Frametime Analyser.py" "gameplay.mp4" -detect-stutters
-```
-
-#### 10. Full analysis with stutter detection
-```bash
-python "Frametime Analyser.py" "gameplay.mp4" 120 -delta-plot -detect-stutters -title "Full Analysis"
+# Analyse a long capture as fast as possible, without the preview window
+python frametime_analyser.py gameplay.mp4 120 --detect-stutters --no-display
 ```
 
 ### Output Files
 
-After analysis completes, two files are generated:
+Three files are written next to the input video:
 
-1. **`[filename]_analyzed.mp4`** - Video with overlay graphs and statistics
-2. **`[filename]_histogram.csv`** - Performance data export
+1. **`[filename]_analyzed.mp4`** - The video with overlay graphs and statistics. It is always 1280×720 at the target frame rate; other aspect ratios are letterboxed or pillarboxed to fit.
+2. **`[filename]_histogram.csv`** - Summary statistics (see below)
+3. **`[filename]_frametimes.csv`** - One row per unique frame: `unique_frame, video_frame, time_s, frametime_ms`. Use this to analyse or chart the data in other tools.
 
-Example CSV output:
+Example `_histogram.csv`:
 ```csv
 Frametime Analysis Results
 Video File,C:\path\to\gameplay.mp4
 Target FPS,60
-Average Frametime (ms),20.16
-Average FPS,48.50
-Total Unique Frames Analyzed,2160
 Analysis Duration,36.0 seconds (0.60 minutes)
-Sample Window (Max),216000 frames (last 30 minutes of video)
+Total Unique Frames Analyzed,1746
+Statistics Window,last 30 minutes of video
+Unique Frames in Window,1746
+Average Frametime (ms),20.62
+Average FPS,48.50
+99th Percentile Frametime (ms),50.00
+1% Low FPS,20.00
+0.1% Low FPS,12.00
 
 Stutter Detection Results
-Total Stutters Detected,15
-Severe Stutters (>= 4x target frametime),3
-Moderate Stutters (>= 2.5x target frametime),12
+Total Stutters Detected,28
+Severe Stutters (>= 4x target frametime),6
+Moderate Stutters (>= 2.5x target frametime),22
 Severe Threshold (ms),66.7
 Moderate Threshold (ms),41.7
-Average Stutter Frametime (ms),52.4
-Worst Stutter Frametime (ms),125.8
+Average Stutter Frametime (ms),60.7
+Worst Stutter Frametime (ms),133.3
 
 Bucket,Range (ms),Frame Count,Percentage
-Perfect,0-18,1766,81.67%
-Good,18-25,216,10.00%
-Fair,25-35,108,5.00%
-Stutter,35-50,43,2.00%
-Bad,50+,27,1.33%
+Perfect,0-18,1426,81.67%
+Good,18-25,175,10.02%
+Fair,25-35,87,4.98%
+Stutter,35-50,35,2.00%
+Bad,50+,23,1.32%
 ```
 
-*Note: Stutter detection section only appears when `-detect-stutters` flag is used.*
+*The stutter section only appears when `--detect-stutters` is used.*
+
+**How the statistics are calculated** (over the last 30 minutes of video):
+- **Average FPS** = unique frames ÷ seconds of video, which equals 1000 ÷ average frametime
+- **99th percentile frametime**: 99% of frames were this fast or faster
+- **1% low / 0.1% low FPS** = 1000 ÷ the 99th / 99.9th percentile frametime
 
 ---
 
@@ -238,34 +217,30 @@ Bad,50+,27,1.33%
 ### Key Processing Steps
 
 1. **Frame Difference Calculation**
-   - Downscale frame to 10% for faster processing
+   - Fit the frame onto a 1280×720 canvas, then downscale to 10% for faster processing
    - Convert to grayscale
-   - Calculate absolute difference from previous frame
-   - Average difference across all pixels = `frame_diff`
+   - Average absolute difference from the previous frame = `frame_diff`
 
 2. **Duplicate Frame Detection**
-   - Compare `frame_diff` with exponential moving average
-   - If `frame_diff` < 25% of moving average → duplicate frame
-   - Unique frames increment the frametime counter
-   - Duplicate frames continue incrementing the counter
+   - Compare `frame_diff` with an exponential moving average of recent differences
+   - If `frame_diff` < 25% of the moving average → repeated (dropped) frame
+   - Otherwise it is a new, unique frame
 
 3. **Frametime Recording**
-   - When a unique frame is detected, record accumulated frametime
-   - Convert frame count to milliseconds: `frametime_count × target_frametime`
-   - Store in rolling 30-minute buffer (216,000 frames at 120fps)
+   - A unique frame's frametime is the number of video frames since the previous unique frame × the target frametime
+   - Kept in a rolling window covering the last 30 minutes of video
 
 4. **Statistical Analysis**
-   - Calculate real-time FPS over 60-frame window
-   - Track frametime distribution across performance buckets
-   - Compute frame-to-frame deltas for micro-stutter detection
-   - Generate CDF curve from sorted frametime data
+   - Real-time FPS = unique frames in the last second of video
+   - Distribution across performance buckets, percentiles and the CDF are computed from the rolling window
+   - Frame-to-frame deltas for micro-stutter detection
 
 ### Performance Notes
 
-- **CPU-intensive**: OpenCV decodes video in software
-- **Recommended**: i7-3770 or better for H.264 @ 1080p
-- **Higher resolutions/H.265**: Requires faster CPU
-- **Memory usage**: ~1.7MB for 30-minute histogram buffer (negligible)
+- **CPU-intensive**: OpenCV decodes video in software, on a background thread
+- **Recommended**: i7-3770 or better for real-time H.264 @ 1080p
+- **Higher resolutions/H.265**: Requires a faster CPU for real-time playback; with `--no-display` it just takes longer
+- Statistics are updated in constant time per frame, however long the video
 
 ---
 
@@ -277,11 +252,12 @@ The project includes a test suite. See [TESTING.md](TESTING.md) for how to run i
 
 ## Limitations
 
-* Input video must be recorded at a **constant frame rate** matching the target FPS (60 or 120)
+* The `fps` argument must match the frame rate the video was **recorded at** (the analyser warns if the file says otherwise)
 * Dropped frames must be encoded as **duplicate frames** in the video
 * Does **not account for screen tearing** - V-Sync should be enabled during recording
-* Analysis assumes game is rendering frames at target rate; repeated frames indicate performance issues
-* Very short videos (<10 frames) may not generate meaningful histogram data
+* Analysis assumes the game is meant to render a new frame every refresh; repeated frames indicate performance issues
+* Scenes with no movement at all (e.g. a paused menu) can be misread, because every frame looks like a repeat
+* The histogram and CDF panels appear once more than 10 unique frames have been analysed
 
 ---
 
@@ -289,15 +265,16 @@ The project includes a test suite. See [TESTING.md](TESTING.md) for how to run i
 
 | Feature | Original | This Fork |
 |---------|----------|-----------|
-| Python Version | 2.7 | 3.x |
-| FPS Modes | 60fps only | 60fps & 120fps |
+| Python Version | 2.7 | 3.11+ |
+| FPS Modes | 60fps only | Any (60, 120, 144, ...) |
 | Command-line Args | No | Yes |
+| Headless mode | No | Yes |
 | Video Output | No | Yes |
 | Histogram | No | Yes (5 buckets) |
 | CDF Graph | No | Yes |
 | Delta Plot | No | Yes (optional) |
-| CSV Export | No | Yes |
-| Statistics | Basic | Average FPS, Average Frametime |
+| CSV Export | No | Summary + per-frame |
+| Statistics | Basic | Average, 1% low, 0.1% low, 99th percentile |
 | Rolling Window | N/A | 30 minutes |
 | Text Visibility | Basic | Anti-aliased with borders |
 
@@ -305,7 +282,7 @@ The project includes a test suite. See [TESTING.md](TESTING.md) for how to run i
 
 ## License
 
-Same as original repository.
+[GNU Affero General Public License v3.0](LICENSE), the same as the original repository.
 
 ---
 
@@ -319,5 +296,4 @@ Same as original repository.
 
 ## Contributing
 
-Contributions are welcome! Feel free to open issues or submit pull requests with improvements.
-
+Contributions are welcome! Feel free to open issues or submit pull requests with improvements. Please run the tests first; see [TESTING.md](TESTING.md).

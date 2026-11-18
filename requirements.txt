@@ -1,5 +1,2 @@
-numpy
-opencv-python
-matplotlib
-pytest
-pytest-cov
+numpy>=1.24
+opencv-python>=4.8

@@ -1,244 +1,299 @@
 """Integration tests for the frametime analyser"""
-import unittest
-import sys
+import csv
 import os
-import tempfile
+import shutil
 import subprocess
-import numpy as np
+import sys
+import tempfile
+import unittest
+
 import cv2
+import numpy as np
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPT_PATH = os.path.join(REPO_ROOT, "Frametime Analyser.py")
+LEGACY_SCRIPT = os.path.join(REPO_ROOT, "Frametime Analyser.py")
 
-# Add parent directory to path to import the main module
 sys.path.insert(0, REPO_ROOT)
 
-
-class TestVideoGeneration(unittest.TestCase):
-    """Test cases for generating test videos"""
-    
-    def setUp(self):
-        """Create a temporary directory for test files"""
-        self.temp_dir = tempfile.mkdtemp()
-        
-    def tearDown(self):
-        """Clean up temporary files"""
-        import shutil
-        shutil.rmtree(self.temp_dir)
-        
-    def create_test_video(self, filename, fps=60, duration_seconds=1, width=1920, height=1080):
-        """Helper method to create a test video"""
-        filepath = os.path.join(self.temp_dir, filename)
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(filepath, fourcc, float(fps), (width, height))
-        
-        num_frames = fps * duration_seconds
-        
-        for i in range(num_frames):
-            # Create a frame with changing content
-            frame = np.zeros((height, width, 3), dtype=np.uint8)
-            # Add a moving square to create unique frames
-            x = (i * 10) % width
-            cv2.rectangle(frame, (x, 100), (x + 50, 150), (255, 255, 255), -1)
-            out.write(frame)
-            
-        out.release()
-        return filepath
-        
-    def test_video_creation(self):
-        """Test that we can create a valid test video"""
-        video_path = self.create_test_video("test.mp4", fps=60, duration_seconds=1)
-        
-        # Verify the video exists
-        self.assertTrue(os.path.exists(video_path))
-        
-        # Verify we can open it with OpenCV
-        cap = cv2.VideoCapture(video_path)
-        self.assertTrue(cap.isOpened())
-        
-        # Verify frame count
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.assertEqual(frame_count, 60)
-        
-        cap.release()
-        
-    def test_video_with_duplicate_frames(self):
-        """Test creating a video with duplicate frames (to simulate frame drops)"""
-        filepath = os.path.join(self.temp_dir, "test_duplicates.mp4")
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(filepath, fourcc, 60.0, (1920, 1080))
-        
-        # Create 60 frames, but repeat some to simulate drops
-        unique_frame_count = 0
-        for i in range(60):
-            frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-            
-            # Every 10th frame is a duplicate (write the same frame twice)
-            if i % 10 == 0 and i > 0:
-                # This is a duplicate frame, don't increment unique_frame_count
-                pass
-            else:
-                unique_frame_count += 1
-                # Move the square to make it unique
-                x = (unique_frame_count * 10) % 1920
-                cv2.rectangle(frame, (x, 100), (x + 50, 150), (255, 255, 255), -1)
-                
-            out.write(frame)
-            
-        out.release()
-        
-        self.assertTrue(os.path.exists(filepath))
+import frametime_analyser as fa  # noqa: E402
 
 
-class TestCommandLineArguments(unittest.TestCase):
-    """Test cases for command line argument parsing.
+def write_video(path, frame_ids, fps=60, size=(320, 180)):
+    """Write a video where frame i shows picture frame_ids[i].
 
-    These run the real script in a subprocess. Every case here is rejected
-    during argument parsing, before any video is opened.
+    Consecutive equal ids are exact repeats, like the duplicate frames a
+    capture card records when the game misses a refresh.
     """
+    out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), float(fps), size)
+    for pid in frame_ids:
+        level = 30 + (pid * 37) % 200
+        out.write(np.full((size[1], size[0], 3), level, np.uint8))
+    out.release()
 
+
+def expected_frametime_counts(frame_ids):
+    """Frametimes (in video frames) the analyser should report for frame_ids."""
+    counts, last_unique = [], 0
+    for i in range(1, len(frame_ids)):
+        if frame_ids[i] != frame_ids[i - 1]:
+            counts.append(i - last_unique)
+            last_unique = i
+    return counts
+
+
+class TempDirTestCase(unittest.TestCase):
     def setUp(self):
-        # The script checks the video path exists before parsing other arguments
-        fd, self.video_path = tempfile.mkstemp(suffix=".mp4")
-        os.close(fd)
+        self.temp_dir = tempfile.mkdtemp()
 
     def tearDown(self):
-        os.remove(self.video_path)
+        shutil.rmtree(self.temp_dir)
 
-    def run_script(self, *args):
-        return subprocess.run(
-            [sys.executable, SCRIPT_PATH, *args],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=120,
-        )
 
-    def test_invalid_fps_values(self):
-        """FPS values other than 60 and 120 are rejected"""
-        for fps in ["30", "90", "144"]:
-            result = self.run_script(self.video_path, fps)
-            self.assertEqual(result.returncode, 1, fps)
-            self.assertIn("FPS must be either 60 or 120", result.stdout)
+class TestVideoGeneration(TempDirTestCase):
+    """The synthetic videos used below are readable by OpenCV"""
 
-    def test_non_numeric_argument(self):
-        """Unknown non-numeric arguments are rejected"""
-        result = self.run_script(self.video_path, "fast")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("Invalid argument 'fast'", result.stdout)
+    def test_video_creation(self):
+        path = os.path.join(self.temp_dir, "test.mp4")
+        write_video(path, list(range(60)))
+        cap = cv2.VideoCapture(path)
+        self.assertTrue(cap.isOpened())
+        self.assertEqual(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), 60)
+        self.assertAlmostEqual(cap.get(cv2.CAP_PROP_FPS), 60, places=1)
+        cap.release()
+
+
+class TestArgumentParsing(TempDirTestCase):
+    """Command line parsing (in-process, via fa.parse_args)"""
+
+    def setUp(self):
+        super().setUp()
+        self.video = os.path.join(self.temp_dir, "clip.mp4")
+        open(self.video, "w").close()
+
+    def parse(self, *args):
+        return fa.parse_args(list(args))
+
+    def assert_rejected(self, *args):
+        with self.assertRaises(SystemExit) as ctx:
+            self.parse(*args)
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_defaults(self):
+        a = self.parse(self.video)
+        self.assertEqual(a.fps, 60)
+        self.assertFalse(a.delta_plot or a.detect_stutters or a.no_display)
+        self.assertIsNone(a.watermark)
+        self.assertIsNone(a.title)
+
+    def test_any_target_fps(self):
+        for fps in (30, 60, 120, 144, 240):
+            self.assertEqual(self.parse(self.video, str(fps)).fps, fps)
+
+    def test_invalid_fps(self):
+        for fps in ("0", "-5", "1001", "fast", "59.94"):
+            self.assert_rejected(self.video, fps)
+
+    def test_legacy_single_dash_flags(self):
+        wm = os.path.join(self.temp_dir, "wm.png")
+        cv2.imwrite(wm, np.zeros((8, 8, 3), np.uint8))
+        a = self.parse(self.video, "120", "-delta-plot", "-detect-stutters",
+                       "-watermark", wm, "-title", "My Game")
+        self.assertTrue(a.delta_plot and a.detect_stutters)
+        self.assertEqual((a.fps, a.watermark, a.title), (120, wm, "My Game"))
+
+    def test_double_dash_flags(self):
+        a = self.parse(self.video, "--delta-plot", "--detect-stutters", "--no-display",
+                       "--title", "T")
+        self.assertTrue(a.delta_plot and a.detect_stutters and a.no_display)
+
+    def test_fps_after_options(self):
+        """The fps value can come after options, as in the original script"""
+        a = self.parse(self.video, "-delta-plot", "120")
+        self.assertEqual(a.fps, 120)
+        self.assertTrue(a.delta_plot)
+
+    def test_unknown_option(self):
+        self.assert_rejected(self.video, "--bogus")
 
     def test_missing_video_file(self):
-        """A video path that does not exist is rejected"""
-        missing = os.path.join(tempfile.gettempdir(), "does_not_exist_frametime.mp4")
-        result = self.run_script(missing, "60")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("not found", result.stdout)
+        self.assert_rejected(os.path.join(self.temp_dir, "missing.mp4"))
+
+    def test_missing_watermark_file(self):
+        self.assert_rejected(self.video, "-watermark", os.path.join(self.temp_dir, "nope.png"))
 
     def test_watermark_requires_path(self):
-        """-watermark without a file path is rejected"""
-        result = self.run_script(self.video_path, "-watermark")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("-watermark flag requires a file path", result.stdout)
+        self.assert_rejected(self.video, "-watermark")
 
-    def test_frametime_calculation_from_fps(self):
-        """Test that frametime is correctly calculated from FPS"""
-        test_cases = {
-            60: 16.666666666666668,
-            120: 8.333333333333334
-        }
-        
-        for fps, expected_frametime in test_cases.items():
-            calculated_frametime = 1000.0 / fps
-            self.assertAlmostEqual(calculated_frametime, expected_frametime, places=5)
+    def test_title_requires_text(self):
+        self.assert_rejected(self.video, "-title")
 
 
-class TestOutputFileGeneration(unittest.TestCase):
-    """Test cases for output file naming and path generation"""
-    
-    def test_analyzed_video_filename(self):
-        """Test that analyzed video filename is generated correctly"""
-        input_path = "test_video.mp4"
-        expected_output = "test_video_analyzed.mp4"
-        
-        output_path = os.path.splitext(input_path)[0] + "_analyzed.mp4"
-        self.assertEqual(output_path, expected_output)
-        
-    def test_histogram_csv_filename(self):
-        """Test that histogram CSV filename is generated correctly"""
-        input_path = "test_video.mp4"
-        expected_output = "test_video_histogram.csv"
-        
-        csv_path = os.path.splitext(input_path)[0] + "_histogram.csv"
-        self.assertEqual(csv_path, expected_output)
-        
-    def test_path_with_directory(self):
-        """Test filename generation with full path"""
-        input_path = "C:/Videos/gameplay.mp4"
-        expected_output = "C:/Videos/gameplay_analyzed.mp4"
-        
-        output_path = os.path.splitext(input_path)[0] + "_analyzed.mp4"
-        self.assertEqual(output_path, expected_output)
+class TestLegacyEntryPoint(TempDirTestCase):
+    """'Frametime Analyser.py' still works as the entry point"""
+
+    def run_script(self, *args):
+        return subprocess.run([sys.executable, LEGACY_SCRIPT, *args], cwd=REPO_ROOT,
+                              capture_output=True, text=True, timeout=120)
+
+    def test_help(self):
+        result = self.run_script("--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--no-display", result.stdout)
+
+    def test_rejects_bad_arguments(self):
+        result = self.run_script(os.path.join(self.temp_dir, "missing.mp4"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("not found", result.stderr)
+
+    def test_headless_run(self):
+        video = os.path.join(self.temp_dir, "clip.mp4")
+        write_video(video, list(range(40)))
+        result = self.run_script(video, "--no-display")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(os.path.exists(fa.output_paths(video).summary_csv))
 
 
-class TestPerformanceMetrics(unittest.TestCase):
-    """Test cases for performance metric calculations"""
-    
-    def test_fps_calculation(self):
-        """Test FPS calculation from frame list"""
-        # Simulate 60 unique frames in the last second
-        fps_list = [1] * 60
-        calculated_fps = sum(fps_list)
-        self.assertEqual(calculated_fps, 60)
-        
-        # Simulate some dropped frames (30 unique, 30 duplicates)
-        fps_list = [1] * 30 + [0] * 30
-        calculated_fps = sum(fps_list)
-        self.assertEqual(calculated_fps, 30)
-        
-    def test_average_frametime_calculation(self):
-        """Test average frametime calculation"""
-        frametime_history = [16.67, 16.67, 16.67, 33.34, 16.67]
-        avg_frametime = sum(frametime_history) / len(frametime_history)
-        expected_avg = 20.004
-        self.assertAlmostEqual(avg_frametime, expected_avg, places=2)
-        
-    def test_stutter_detection_logic(self):
-        """Test stutter detection thresholds"""
-        target_fps = 60
-        target_frametime = 1000.0 / target_fps  # 16.67ms
-        
-        moderate_threshold = target_frametime * 2.5  # 41.67ms
-        severe_threshold = target_frametime * 4.0    # 66.67ms
-        
-        test_frametimes = [16.67, 20.0, 45.0, 70.0, 16.67]
-        
-        moderate_stutters = [ft for ft in test_frametimes if ft >= moderate_threshold and ft < severe_threshold]
-        severe_stutters = [ft for ft in test_frametimes if ft >= severe_threshold]
-        
-        self.assertEqual(len(moderate_stutters), 1)  # 45.0ms
-        self.assertEqual(len(severe_stutters), 1)    # 70.0ms
+class TestOutputPaths(unittest.TestCase):
+    def test_output_paths(self):
+        p = fa.output_paths("C:/Videos/gameplay.mp4")
+        self.assertEqual(p.video, "C:/Videos/gameplay_analyzed.mp4")
+        self.assertEqual(p.summary_csv, "C:/Videos/gameplay_histogram.csv")
+        self.assertEqual(p.frametimes_csv, "C:/Videos/gameplay_frametimes.csv")
 
 
-class TestDataStructures(unittest.TestCase):
-    """Test cases for data structures used in the analyser"""
-    
-    def test_frametime_graph_initialization(self):
-        """Test frametime graph list initialization"""
-        frametime_samples = 90
-        frametime_graph = [0] * frametime_samples
-        
-        self.assertEqual(len(frametime_graph), 90)
-        self.assertEqual(sum(frametime_graph), 0)
-        
-    def test_histogram_buffer_size(self):
-        """Test histogram buffer can hold 30 minutes of data"""
-        histogram_sample_size = 216000  # 30 minutes at 120fps
-        
-        # At 120fps: 120 * 60 * 30 = 216,000
-        expected_size_120fps = 120 * 60 * 30
-        self.assertEqual(histogram_sample_size, expected_size_120fps)
-        
-        # Verify it also covers 60fps (60 * 60 * 30 = 108,000)
-        expected_size_60fps = 60 * 60 * 30
-        self.assertGreater(histogram_sample_size, expected_size_60fps)
+class TestFrametimeAnalyser(unittest.TestCase):
+    """Duplicate detection and statistics, fed with frame differences directly"""
+
+    def feed(self, analyser, pattern):
+        """pattern: 'u' for a new frame, 'd' for a repeat. Returns reported frametimes."""
+        return [ft for ft in (analyser.process(20.0 if c == "u" else 0.1) for c in pattern)
+                if ft is not None]
+
+    def test_smooth_video(self):
+        a = fa.FrametimeAnalyser(60)
+        fts = self.feed(a, "u" * 120)
+        self.assertEqual(len(fts), 120)
+        self.assertTrue(all(abs(ft - 1000 / 60) < 1e-9 for ft in fts))
+        self.assertEqual(a.fps, 60)
+        self.assertAlmostEqual(a.window.average_fps(), 60)
+
+    def test_repeated_frames_lengthen_frametime(self):
+        a = fa.FrametimeAnalyser(60)
+        fts = self.feed(a, "uuduuddu")
+        self.assertEqual([round(ft / (1000 / 60)) for ft in fts], [1, 1, 2, 1, 3])
+        self.assertEqual(a.unique_frames, 5)
+        self.assertEqual(a.frames_processed, 8)
+
+    def test_half_rate_video(self):
+        a = fa.FrametimeAnalyser(60)
+        self.feed(a, "ud" * 60)
+        self.assertEqual(a.fps, 30)
+        # The first unique frame is only one frame long, so allow a little slack
+        self.assertAlmostEqual(a.window.average_fps(), 30, delta=0.3)
+        self.assertAlmostEqual(a.window.mean(), 2000 / 60, delta=0.3)
+
+    def test_120fps(self):
+        a = fa.FrametimeAnalyser(120)
+        fts = self.feed(a, "u" * 240)
+        self.assertAlmostEqual(fts[-1], 1000 / 120)
+        self.assertEqual(a.fps, 120)
+
+    def test_stutter_detection(self):
+        """2.5x target is moderate, 4x is severe (60fps: 41.7ms / 66.7ms)"""
+        a = fa.FrametimeAnalyser(60, detect_stutters=True)
+        # 2 frames (33ms): none; 3 frames (50ms): moderate; 4 frames (66.7ms): severe
+        self.feed(a, "uu" + "du" + "ddu" + "dddu" + "u")
+        self.assertEqual([s.severity for s in a.stutters], ["moderate", "severe"])
+        self.assertEqual((a.moderate_stutters, a.severe_stutters), (1, 1))
+        self.assertEqual([s.unique_index for s in a.stutters], [3, 4])
+        self.assertEqual([s.video_frame for s in a.stutters], [7, 11])
+
+    def test_stutters_not_recorded_when_disabled(self):
+        a = fa.FrametimeAnalyser(60)
+        self.feed(a, "u" + "d" * 10 + "u")
+        self.assertEqual(a.stutters, [])
+
+    def test_frame_delta(self):
+        a = fa.FrametimeAnalyser(60)
+        self.feed(a, "uudu")
+        ft = 1000 / 60
+        self.assertEqual(list(a.delta_graph)[-3:], [0, 0, ft])
+
+    def test_summary(self):
+        a = fa.FrametimeAnalyser(60)
+        self.feed(a, ("u" * 98 + "du") * 2)
+        s = a.summary()
+        self.assertEqual(s["unique_frames"], 198)
+        self.assertAlmostEqual(s["duration_s"], 200 / 60)
+        self.assertAlmostEqual(s["p99_frametime"], 2000 / 60)
+        self.assertAlmostEqual(s["low_1_fps"], 30)
+
+    def test_overlay_draws_on_canvas(self):
+        """Every overlay option draws without error, with and without data"""
+        img_wm = np.full((32, 32, 4), 255, np.uint8)
+        for delta in (False, True):
+            for fps in (30, 60, 120, 144):
+                a = fa.FrametimeAnalyser(fps, detect_stutters=True)
+                overlay = fa.Overlay(fps, delta, True, "Title", img_wm)
+                img = np.zeros((720, 1280, 3), np.uint8)
+                overlay.draw(img, a)
+                self.feed(a, "uuuddddu" * 100)
+                overlay.draw(img, a)
+                self.assertGreater(img.sum(), 0)
 
 
-if __name__ == '__main__':
+class TestEndToEnd(TempDirTestCase):
+    """Run the full analyser headless on a generated video with known drops"""
+
+    def test_known_frame_drops(self):
+        # 300 frames at 60fps: mostly smooth, with single, double and a long repeat
+        ids, pid = [], 0
+        for i in range(300):
+            if i % 10 == 5 or (i % 50 == 20) or 200 <= i < 206:
+                pass  # repeat the previous picture
+            else:
+                pid += 1
+            ids.append(pid)
+        video = os.path.join(self.temp_dir, "game capture.mp4")
+        write_video(video, ids)
+
+        code = fa.main([video, "60", "--no-display", "--detect-stutters", "--delta-plot",
+                        "--title", "Test"])
+        self.assertEqual(code, 0)
+
+        paths = fa.output_paths(video)
+        for path in paths:
+            self.assertTrue(os.path.exists(path), path)
+
+        # Per-frame frametimes match the drops written into the video
+        with open(paths.frametimes_csv, newline="") as f:
+            rows = list(csv.DictReader(f))
+        got = [round(float(r["frametime_ms"]) / (1000 / 60)) for r in rows]
+        self.assertEqual(got, expected_frametime_counts(ids))
+        self.assertEqual([int(r["unique_frame"]) for r in rows], list(range(len(rows))))
+
+        # Summary CSV agrees
+        with open(paths.summary_csv, newline="") as f:
+            summary = {row[0]: row[1:] for row in csv.reader(f) if row}
+        self.assertEqual(int(summary["Total Unique Frames Analyzed"][0]), len(rows))
+        self.assertEqual(int(summary["Severe Stutters (>= 4x target frametime)"][0]), 1)
+        self.assertIn("Bad", summary)
+
+        # Output video is the full analysed length on the fixed canvas
+        cap = cv2.VideoCapture(paths.video)
+        self.assertEqual(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), 299)
+        self.assertEqual(int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), 1280)
+        self.assertEqual(int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), 720)
+        cap.release()
+
+    def test_fps_mismatch_warning(self):
+        video = os.path.join(self.temp_dir, "clip30.mp4")
+        write_video(video, list(range(40)), fps=30)
+        result = subprocess.run([sys.executable, LEGACY_SCRIPT, video, "60", "--no-display"],
+                                cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Warning: the video is 30.00 fps", result.stdout)
+
+
+if __name__ == "__main__":
     unittest.main()
