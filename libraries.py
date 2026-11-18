@@ -120,3 +120,63 @@ class FileVideoStream:
         self.stopped = True
         # wait until stream resources are released (producer thread might be still grabbing frame)
         self.thread.join()    
+
+# Frametime histogram buckets per target FPS: (min_ms, max_ms, label, BGR colour).
+# A frametime falls in a bucket when min_ms <= frametime < max_ms.
+# Ranges are chosen so the ideal frametime (16.67ms / 8.33ms) lands in "Perfect".
+HISTOGRAM_BUCKETS = {
+    60: [
+        (0, 18, "Perfect", (93, 232, 130)),      # Green - includes ideal 16.67ms
+        (18, 25, "Good", (93, 232, 130)),        # Green - still smooth
+        (25, 35, "Fair", (0, 255, 255)),         # Yellow - noticeable
+        (35, 50, "Stutter", (0, 165, 255)),      # Orange - severe
+        (50, 999, "Bad", (0, 0, 255)),           # Red - critical
+    ],
+    120: [
+        (0, 9, "Perfect", (93, 232, 130)),       # Green - includes ideal 8.33ms
+        (9, 12, "Good", (93, 232, 130)),         # Green - still smooth
+        (12, 17, "Fair", (0, 255, 255)),         # Yellow - noticeable
+        (17, 25, "Stutter", (0, 165, 255)),      # Orange - severe
+        (25, 999, "Bad", (0, 0, 255)),           # Red - critical
+    ],
+}
+
+
+def get_histogram_buckets(target_fps):
+    """Return the histogram bucket definitions for a target FPS (60 or 120)."""
+    return HISTOGRAM_BUCKETS[target_fps]
+
+
+def categorize_frametime(frametime_ms, buckets):
+    """Return the index of the bucket a frametime falls in, or None if outside all buckets."""
+    for i, (min_ft, max_ft, _label, _color) in enumerate(buckets):
+        if min_ft <= frametime_ms < max_ft:
+            return i
+    return None
+
+
+def count_frames_per_bucket(frametimes, buckets):
+    """Count how many frametimes fall into each bucket."""
+    counts = [0] * len(buckets)
+    for ft in frametimes:
+        i = categorize_frametime(ft, buckets)
+        if i is not None:
+            counts[i] += 1
+    return counts
+
+
+class FpsCounter:
+    """Rolling one-second window of frame flags (1 = unique frame, 0 = repeated frame).
+
+    The window holds target_fps samples, so it always spans one second of video
+    and the sum of the window is the current FPS.
+    """
+
+    def __init__(self, target_fps):
+        self.window = [0] * target_fps
+
+    def record(self, unique):
+        """Record one video frame and return the updated FPS."""
+        self.window.pop(0)
+        self.window.append(1 if unique else 0)
+        return sum(self.window)

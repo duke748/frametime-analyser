@@ -29,3 +29,8 @@ Thumbs.db
 # Test files
 tests/*.mp4
 tests/*.avi
+
+# Coverage output
+htmlcov/
+.coverage
+.coverage.*

@@ -1,8 +1,21 @@
 """Unit tests for libraries module"""
 import unittest
+import sys
+import os
 import numpy as np
 import cv2
-from libraries import ResizeWithAspectRatio, FileVideoStream
+
+# Make the repo root importable regardless of the working directory
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from libraries import (
+    ResizeWithAspectRatio,
+    FileVideoStream,
+    get_histogram_buckets,
+    categorize_frametime,
+    count_frames_per_bucket,
+    FpsCounter,
+)
 
 
 class TestResizeWithAspectRatio(unittest.TestCase):
@@ -107,39 +120,105 @@ class TestFrametimeCalculations(unittest.TestCase):
 
 
 class TestHistogramBuckets(unittest.TestCase):
-    """Test cases for histogram bucket calculations"""
-    
+    """Test cases for the histogram buckets used by the display and CSV export"""
+
+    def assert_bucket_edges(self, target_fps, expected):
+        buckets = get_histogram_buckets(target_fps)
+        self.assertEqual([(lo, hi, label) for lo, hi, label, _ in buckets], expected)
+
     def test_60fps_histogram_buckets(self):
         """Test histogram bucket ranges for 60fps"""
-        target_fps = 60
-        target_frametime = 1000.0 / target_fps
-        
-        # Test bucket thresholds
-        perfect_threshold = target_frametime * 1.08  # ~18ms
-        good_threshold = target_frametime * 1.5      # ~25ms
-        fair_threshold = target_frametime * 2.1      # ~35ms
-        stutter_threshold = target_frametime * 3.0   # ~50ms
-        
-        self.assertAlmostEqual(perfect_threshold, 18.0, places=1)
-        self.assertAlmostEqual(good_threshold, 25.0, places=1)
-        self.assertAlmostEqual(fair_threshold, 35.0, places=1)
-        self.assertAlmostEqual(stutter_threshold, 50.0, places=1)
-        
+        self.assert_bucket_edges(60, [
+            (0, 18, "Perfect"),
+            (18, 25, "Good"),
+            (25, 35, "Fair"),
+            (35, 50, "Stutter"),
+            (50, 999, "Bad"),
+        ])
+
     def test_120fps_histogram_buckets(self):
         """Test histogram bucket ranges for 120fps"""
-        target_fps = 120
-        target_frametime = 1000.0 / target_fps
-        
-        # Test bucket thresholds
-        perfect_threshold = target_frametime * 1.08  # ~9ms
-        good_threshold = target_frametime * 1.44     # ~12ms
-        fair_threshold = target_frametime * 2.04     # ~17ms
-        stutter_threshold = target_frametime * 3.0   # ~25ms
-        
-        self.assertAlmostEqual(perfect_threshold, 9.0, places=1)
-        self.assertAlmostEqual(good_threshold, 12.0, places=1)
-        self.assertAlmostEqual(fair_threshold, 17.0, places=1)
-        self.assertAlmostEqual(stutter_threshold, 25.0, places=1)
+        self.assert_bucket_edges(120, [
+            (0, 9, "Perfect"),
+            (9, 12, "Good"),
+            (12, 17, "Fair"),
+            (17, 25, "Stutter"),
+            (25, 999, "Bad"),
+        ])
+
+    def test_buckets_are_contiguous(self):
+        """Each bucket starts where the previous one ends, so no frametime is skipped"""
+        for target_fps in (60, 120):
+            buckets = get_histogram_buckets(target_fps)
+            for prev, nxt in zip(buckets, buckets[1:]):
+                self.assertEqual(prev[1], nxt[0])
+
+    def test_ideal_frametime_is_perfect(self):
+        """The target frametime falls in the Perfect bucket"""
+        for target_fps in (60, 120):
+            buckets = get_histogram_buckets(target_fps)
+            i = categorize_frametime(1000.0 / target_fps, buckets)
+            self.assertEqual(buckets[i][2], "Perfect")
+
+    def test_performance_category_thresholds(self):
+        """Frametimes on and around the bucket edges get the right category"""
+        buckets = get_histogram_buckets(60)
+        cases = {
+            0: "Perfect", 17.99: "Perfect", 18: "Good", 24.99: "Good",
+            25: "Fair", 35: "Stutter", 49.99: "Stutter", 50: "Bad", 500: "Bad",
+        }
+        for ft, expected in cases.items():
+            self.assertEqual(buckets[categorize_frametime(ft, buckets)][2], expected, ft)
+
+    def test_frametime_outside_buckets(self):
+        """Frametimes outside every bucket are not categorised"""
+        buckets = get_histogram_buckets(60)
+        self.assertIsNone(categorize_frametime(999, buckets))
+        self.assertIsNone(categorize_frametime(-1, buckets))
+
+    def test_count_frames_per_bucket(self):
+        """Frametimes are counted into the right buckets"""
+        buckets = get_histogram_buckets(60)
+        frametimes = [16.67, 16.67, 20.0, 33.33, 40.0, 66.67, 1500.0]
+        self.assertEqual(count_frames_per_bucket(frametimes, buckets), [2, 1, 1, 1, 1])
+
+    def test_invalid_target_fps(self):
+        """Only 60 and 120 have bucket definitions"""
+        with self.assertRaises(KeyError):
+            get_histogram_buckets(90)
+
+
+class TestFpsCounter(unittest.TestCase):
+    """Test cases for the rolling one-second FPS counter"""
+
+    def test_window_spans_one_second(self):
+        """The window holds one second of frames at the target FPS"""
+        for target_fps in (60, 120):
+            self.assertEqual(len(FpsCounter(target_fps).window), target_fps)
+
+    def test_all_unique_frames_reach_target_fps(self):
+        """A smooth video reports the full target FPS, including 120fps"""
+        for target_fps in (60, 120):
+            counter = FpsCounter(target_fps)
+            for _ in range(target_fps):
+                fps = counter.record(unique=True)
+            self.assertEqual(fps, target_fps)
+
+    def test_repeated_frames_lower_fps(self):
+        """Repeated frames count as dropped frames"""
+        counter = FpsCounter(60)
+        for i in range(60):
+            fps = counter.record(unique=(i % 2 == 0))
+        self.assertEqual(fps, 30)
+
+    def test_old_frames_leave_window(self):
+        """Frames older than one second no longer count"""
+        counter = FpsCounter(60)
+        for _ in range(60):
+            counter.record(unique=True)
+        for _ in range(60):
+            fps = counter.record(unique=False)
+        self.assertEqual(fps, 0)
 
 
 class TestImageProcessing(unittest.TestCase):

@@ -123,9 +123,9 @@ severe_stutter_threshold_multiplier = 4.0  # Severe stutter (shader compilation,
 frametime_history = []
 histogram_sample_size = 216000  # 30 minutes at 120fps (covers both modes)
 
-# FPS list always represents 1 second of data (60 samples for 60fps base rate)
-# This ensures FPS calculation is consistent regardless of target_fps
-fps_list = [0]*60 # 0 means repeated frame, 1 means unique frame. summation of fps_list gives the current fps
+# FPS counter holds target_fps samples so it always spans 1 second of video
+# (60 samples at 60fps, 120 samples at 120fps). Its sum is the current fps.
+fps_counter = FpsCounter(target_fps)
 fps = 0
 fps_display = ""  # FPS value shown on screen (updates slower)
 fps_display_timer = 0  # Timer for FPS display update
@@ -202,9 +202,7 @@ while fvs.more():
 
     threshold = 0.25*moving_avg_brightness #threshold below which a frame is considered "identical" or dropped
     if average < threshold:
-        fps_list.pop(0)
-        fps_list.append(0)
-        fps = sum(fps_list)
+        fps = fps_counter.record(unique=False)
 
         fps_graph.pop(0)
         fps_graph.append(fps)
@@ -240,9 +238,7 @@ while fvs.more():
         if len(frametime_history) > histogram_sample_size:
             frametime_history.pop(0)
         
-        fps_list.pop(0)
-        fps_list.append(1)
-        fps = sum(fps_list)
+        fps = fps_counter.record(unique=True)
 
         fps_graph.pop(0)
         fps_graph.append(fps)
@@ -572,8 +568,8 @@ while fvs.more():
     fps_graph_bottom = plt_origin_y + 40*y_scale
     
     for key, value in enumerate(fps_graph):
-        # Start drawing after we have enough data (use 60 instead of target_fps)
-        if count < fps_graph_samples - key + 60:
+        # Start drawing once the 1-second FPS window has filled
+        if count < fps_graph_samples - key + target_fps:
             continue
         if key == 0:
             continue
@@ -642,35 +638,10 @@ while fvs.more():
         hist_width = 270  # Wider to prevent text overlap
         hist_height = 100  # Slightly smaller to fit better
         
-        # Define frametime buckets based on target FPS
-        # Ranges designed so perfect framerate falls in "Perfect" category
-        if target_fps == 60:
-            # 60fps target is 16.67ms - Perfect should include 16.67ms
-            buckets = [
-                (0, 18, "Perfect", (93, 232, 130)),      # Green - includes ideal 16.67ms
-                (18, 25, "Good", (93, 232, 130)),        # Green - still smooth
-                (25, 35, "Fair", (0, 255, 255)),         # Yellow - noticeable
-                (35, 50, "Stutter", (0, 165, 255)),      # Orange - severe
-                (50, 999, "Bad", (0, 0, 255))            # Red - critical
-            ]
-        else:  # 120fps
-            # 120fps target is 8.33ms - Perfect should include 8.33ms
-            buckets = [
-                (0, 9, "Perfect", (93, 232, 130)),       # Green - includes ideal 8.33ms
-                (9, 12, "Good", (93, 232, 130)),         # Green - still smooth
-                (12, 17, "Fair", (0, 255, 255)),         # Yellow - noticeable
-                (17, 25, "Stutter", (0, 165, 255)),      # Orange - severe
-                (25, 999, "Bad", (0, 0, 255))            # Red - critical
-            ]
-        
-        # Count frames in each bucket
-        bucket_counts = [0] * len(buckets)
-        for ft in frametime_history:
-            for i, (min_ft, max_ft, label, color) in enumerate(buckets):
-                if min_ft <= ft < max_ft:
-                    bucket_counts[i] += 1
-                    break
-        
+        # Frametime buckets for the target FPS (shared with the CSV export)
+        buckets = get_histogram_buckets(target_fps)
+        bucket_counts = count_frames_per_bucket(frametime_history, buckets)
+
         # Calculate percentages
         total = sum(bucket_counts)
         bucket_percentages = [(count / total * 100) if total > 0 else 0 for count in bucket_counts]
@@ -683,11 +654,8 @@ while fvs.more():
         avg_frametime = sum(frametime_history) / len(frametime_history) if len(frametime_history) > 0 else 0
         
         # Determine color for average frametime based on buckets
-        avg_ft_color = text_color
-        for min_ft, max_ft, label, color in buckets:
-            if min_ft <= avg_frametime < max_ft:
-                avg_ft_color = color
-                break
+        avg_bucket = categorize_frametime(avg_frametime, buckets)
+        avg_ft_color = buckets[avg_bucket][3] if avg_bucket is not None else text_color
         
         # Calculate average FPS from fps_graph (using same window as histogram would be ideal)
         # Use the most recent portion of fps_graph that corresponds to histogram size
@@ -912,32 +880,10 @@ if out is not None:
 if len(frametime_history) > 10:
     csv_path = os.path.splitext(file_path)[0] + "_histogram.csv"
     
-    # Define buckets based on target FPS (same as display logic)
-    if target_fps == 60:
-        buckets = [
-            (0, 18, "Perfect", (93, 232, 130)),
-            (18, 25, "Good", (93, 232, 130)),
-            (25, 35, "Fair", (0, 255, 255)),
-            (35, 50, "Stutter", (0, 165, 255)),
-            (50, 999, "Bad", (0, 0, 255))
-        ]
-    else:  # 120fps
-        buckets = [
-            (0, 9, "Perfect", (93, 232, 130)),
-            (9, 12, "Good", (93, 232, 130)),
-            (12, 17, "Fair", (0, 255, 255)),
-            (17, 25, "Stutter", (0, 165, 255)),
-            (25, 999, "Bad", (0, 0, 255))
-        ]
-    
-    # Count frames in each bucket
-    bucket_counts = [0] * len(buckets)
-    for ft in frametime_history:
-        for i, (min_ft, max_ft, label, color) in enumerate(buckets):
-            if min_ft <= ft < max_ft:
-                bucket_counts[i] += 1
-                break
-    
+    # Same buckets as the on-screen histogram
+    buckets = get_histogram_buckets(target_fps)
+    bucket_counts = count_frames_per_bucket(frametime_history, buckets)
+
     # Calculate percentages
     total = sum(bucket_counts)
     bucket_percentages = [(count / total * 100) if total > 0 else 0 for count in bucket_counts]

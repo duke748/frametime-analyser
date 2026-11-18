@@ -8,25 +8,25 @@ This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](
 
 ### Major Enhancements Added:
 
-- ✅ **Python 3 compatibility** (upgraded from Python 2.7)
-- ✅ **60fps and 120fps mode support** with dynamic scaling
-- ✅ **Video output** with embedded analysis overlays
-- ✅ **Command-line argument parsing** for flexible usage
-- ✅ **Real-time graphs**: Frametime, FPS, and optional Frame Delta plot
-- ✅ **Frametime Distribution Histogram** with color-coded performance buckets
-- ✅ **Cumulative Distribution Function (CDF)** smoothness graph
-- ✅ **Average statistics** for frametime and FPS over 30-minute rolling window
-- ✅ **CSV export** of histogram data and performance metrics
-- ✅ **Anti-aliased text** with black borders for improved readability
-- ✅ **Micro-stutter detection** via Frame-to-Frame Delta analysis
-- ✅ **Extended histogram buffer** (30 minutes of data)
-- ✅ **Stutter detection** for shader compilation and traversal stutters
+- **Python 3 compatibility** (upgraded from Python 2.7)
+- **60fps and 120fps mode support** with dynamic scaling
+- **Video output** with embedded analysis overlays
+- **Command-line argument parsing** for flexible usage
+- **Real-time graphs**: Frametime, FPS, and optional Frame Delta plot
+- **Frametime Distribution Histogram** with color-coded performance buckets
+- **Cumulative Distribution Function (CDF)** smoothness graph
+- **Average statistics** for frametime and FPS over 30-minute rolling window
+- **CSV export** of histogram data and performance metrics
+- **Anti-aliased text** with black borders for improved readability
+- **Micro-stutter detection** via Frame-to-Frame Delta analysis
+- **Extended histogram buffer** (30 minutes of data)
+- **Stutter detection** for shader compilation and traversal stutters
 
 ---
 
 ## Features
 
-### 📊 Real-Time Visual Analysis
+### Real-Time Visual Analysis
 
 1. **Frametime Graph (Left)**
    - Shows absolute frametime in milliseconds for each unique frame
@@ -83,7 +83,7 @@ This is an enhanced fork of the original [Frametime Analyser by AndrewKeYanzhe](
    - Statistics exported to CSV including average and worst-case stutter severity
    - Enable with `-detect-stutters` flag
 
-### 📁 Data Export
+### Data Export
 
 - **CSV Export**: Automatically generates `[filename]_histogram.csv` containing:
   - Video metadata (file path, target FPS)
@@ -118,7 +118,7 @@ python -m venv .venv
 # source .venv/bin/activate  # Linux/Mac
 
 # Install dependencies
-pip install numpy opencv-python matplotlib
+pip install -r requirements.txt
 ```
 
 ---
@@ -135,12 +135,12 @@ python "Frametime Analyser.py" <video_file> [fps] [options]
 
 | Argument | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
-| `video_file` | string | ✅ Yes | - | Path to the video file to analyze |
-| `fps` | integer | ❌ No | 60 | Target FPS mode: `60` or `120` |
-| `-delta-plot` | flag | ❌ No | disabled | Enable Frame-to-Frame Delta plot for micro-stutter detection |
-| `-watermark <file>` | flag + path | ❌ No | disabled | Add a 32x32 watermark image to bottom left corner (50% opacity) |
-| `-title <text>` | flag + string | ❌ No | disabled | Add a centered title at the top of the screen with opaque background |
-| `-detect-stutters` | flag | ❌ No | disabled | Detect and highlight severe frametime spikes (shader/traversal stutters) |
+| `video_file` | string | Yes | - | Path to the video file to analyze |
+| `fps` | integer | No | 60 | Target FPS mode: `60` or `120` |
+| `-delta-plot` | flag | No | disabled | Enable Frame-to-Frame Delta plot for micro-stutter detection |
+| `-watermark <file>` | flag + path | No | disabled | Add a 32x32 watermark image to bottom left corner (50% opacity) |
+| `-title <text>` | flag + string | No | disabled | Add a centered title at the top of the screen with opaque background |
+| `-detect-stutters` | flag | No | disabled | Detect and highlight severe frametime spikes (shader/traversal stutters) |
 
 ### Examples
 
@@ -271,16 +271,7 @@ Bad,50+,27,1.33%
 
 ## Testing
 
-The project includes a comprehensive test suite. See [TESTING.md](TESTING.md) for detailed testing instructions and coverage information.
-
-**Quick Start:**
-```bash
-# Run all tests
-python -m unittest discover tests -v
-
-# Or using pytest
-pytest tests/ -v
-```
+The project includes a test suite. See [TESTING.md](TESTING.md) for how to run it and what it covers.
 
 ---
 

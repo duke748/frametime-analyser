@@ -4,6 +4,14 @@ The Frametime Analyser project includes a comprehensive test suite covering unit
 
 ## Running Tests
 
+Run all test commands from the repository root (the folder containing `libraries.py`).
+
+### Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
 ### Using unittest (built-in)
 
 ```bash
@@ -20,14 +28,11 @@ python -m unittest discover tests -v
 ### Using pytest (recommended)
 
 ```bash
-# Install test dependencies
-pip install pytest pytest-cov
-
 # Run all tests
 pytest tests/ -v
 
-# Run with coverage report
-pytest tests/ --cov=. --cov-report=html
+# Run with coverage report (written to htmlcov/)
+pytest tests/ --cov=libraries --cov-report=html
 
 # Run specific test file
 pytest tests/test_libraries.py -v
@@ -59,10 +64,17 @@ The test suite includes:
   - Stutter threshold calculation for 60fps
   - Severe stutter threshold calculation for 120fps
 
-- **Histogram bucket testing**
+- **Histogram bucket testing** (`HISTOGRAM_BUCKETS`, used by both the on-screen histogram and the CSV export)
   - 60fps histogram bucket ranges
   - 120fps histogram bucket ranges
-  - Performance category thresholds
+  - Buckets are contiguous and the ideal frametime lands in "Perfect"
+  - Performance category thresholds at the bucket edges
+  - Frame counting per bucket
+
+- **FPS counter testing** (`FpsCounter`)
+  - Window spans one second at both 60fps and 120fps
+  - Smooth video reaches the full target FPS
+  - Repeated frames lower the FPS; old frames leave the window
 
 - **Image processing testing**
   - BGR to grayscale conversion
@@ -77,10 +89,12 @@ The test suite includes:
   - Frame count verification
   - OpenCV compatibility validation
 
-- **Command-line argument parsing**
-  - Valid FPS argument parsing (60, 120)
+- **Command-line argument parsing** (runs `Frametime Analyser.py` in a subprocess)
   - Invalid FPS value rejection
-  - Frametime calculation from FPS
+  - Unknown argument rejection
+  - Missing video file rejection
+  - `-watermark` without a path rejection
+  - Valid arguments are not exercised end to end, because they start video playback
 
 - **Output file generation**
   - Analyzed video filename generation
@@ -96,7 +110,6 @@ The test suite includes:
 - **Data structure testing**
   - Frametime graph initialization
   - Histogram buffer size (30-minute capacity)
-  - FPS list structure (1-second window)
 
 ## Test Files
 
@@ -113,14 +126,16 @@ When adding new features, please include corresponding tests:
 3. Follow existing naming conventions: `test_<feature_name>`
 4. Include docstrings explaining what each test validates
 
-## Continuous Integration
+## Before Committing
 
-Tests should be run before committing changes to ensure code quality and prevent regressions.
+There is no CI set up for this repository, so run the tests yourself before committing.
 
 ```bash
 # Quick test run before commit
 python -m unittest discover tests -v
 
-# Full coverage report
-pytest tests/ --cov=. --cov-report=term-missing
+# Coverage report in the terminal
+pytest tests/ --cov=libraries --cov-report=term-missing
 ```
+
+Coverage only measures `libraries.py`. `Frametime Analyser.py` can't be imported (its name contains a space, and it starts analysing on import), so logic that needs testing belongs in `libraries.py`.

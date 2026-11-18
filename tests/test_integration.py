@@ -3,11 +3,15 @@ import unittest
 import sys
 import os
 import tempfile
+import subprocess
 import numpy as np
 import cv2
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPT_PATH = os.path.join(REPO_ROOT, "Frametime Analyser.py")
+
 # Add parent directory to path to import the main module
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, REPO_ROOT)
 
 
 class TestVideoGeneration(unittest.TestCase):
@@ -87,23 +91,52 @@ class TestVideoGeneration(unittest.TestCase):
 
 
 class TestCommandLineArguments(unittest.TestCase):
-    """Test cases for command line argument parsing"""
-    
-    def test_fps_argument_parsing(self):
-        """Test parsing FPS values"""
-        valid_fps = [60, 120]
-        
-        for fps in valid_fps:
-            # Test that these are valid
-            self.assertIn(fps, [60, 120])
-            
+    """Test cases for command line argument parsing.
+
+    These run the real script in a subprocess. Every case here is rejected
+    during argument parsing, before any video is opened.
+    """
+
+    def setUp(self):
+        # The script checks the video path exists before parsing other arguments
+        fd, self.video_path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+
+    def tearDown(self):
+        os.remove(self.video_path)
+
+    def run_script(self, *args):
+        return subprocess.run(
+            [sys.executable, SCRIPT_PATH, *args],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=120,
+        )
+
     def test_invalid_fps_values(self):
-        """Test that invalid FPS values are rejected"""
-        invalid_fps = [30, 90, 144, 240]
-        
-        for fps in invalid_fps:
-            self.assertNotIn(fps, [60, 120])
-            
+        """FPS values other than 60 and 120 are rejected"""
+        for fps in ["30", "90", "144"]:
+            result = self.run_script(self.video_path, fps)
+            self.assertEqual(result.returncode, 1, fps)
+            self.assertIn("FPS must be either 60 or 120", result.stdout)
+
+    def test_non_numeric_argument(self):
+        """Unknown non-numeric arguments are rejected"""
+        result = self.run_script(self.video_path, "fast")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Invalid argument 'fast'", result.stdout)
+
+    def test_missing_video_file(self):
+        """A video path that does not exist is rejected"""
+        missing = os.path.join(tempfile.gettempdir(), "does_not_exist_frametime.mp4")
+        result = self.run_script(missing, "60")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not found", result.stdout)
+
+    def test_watermark_requires_path(self):
+        """-watermark without a file path is rejected"""
+        result = self.run_script(self.video_path, "-watermark")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("-watermark flag requires a file path", result.stdout)
+
     def test_frametime_calculation_from_fps(self):
         """Test that frametime is correctly calculated from FPS"""
         test_cases = {
@@ -205,13 +238,6 @@ class TestDataStructures(unittest.TestCase):
         # Verify it also covers 60fps (60 * 60 * 30 = 108,000)
         expected_size_60fps = 60 * 60 * 30
         self.assertGreater(histogram_sample_size, expected_size_60fps)
-        
-    def test_fps_list_represents_one_second(self):
-        """Test that FPS list represents exactly one second of data"""
-        fps_list = [0] * 60
-        
-        # At 60fps base rate, 60 samples = 1 second
-        self.assertEqual(len(fps_list), 60)
 
 
 if __name__ == '__main__':
